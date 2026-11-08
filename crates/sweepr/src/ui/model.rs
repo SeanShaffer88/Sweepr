@@ -235,6 +235,34 @@ impl ListModel {
             .collect()
     }
 
+    /// Re-derives ignored flags and pins from settings (ignore list or pin edits).
+    pub fn apply_settings(&mut self, s: &sweepr_core::settings::Settings) {
+        let all = std::mem::take(&mut self.all);
+        self.all = sweepr_core::rules::apply_rules(all, s);
+        self.rebuild();
+    }
+
+    /// Checks or unchecks every visible, non-ignored row.
+    pub fn select_all(&mut self, on: bool) {
+        for k in 0..self.visible.len() {
+            let p = &self.all[self.visible[k]];
+            if p.ignored {
+                continue;
+            }
+            let key = (p.manager, p.id.clone());
+            if on {
+                self.checked.insert(key);
+            } else {
+                self.checked.remove(&key);
+            }
+        }
+    }
+
+    /// Every non-ignored row, regardless of checks or filter (for Update all).
+    pub fn all_active(&self) -> Vec<UpdatePackage> {
+        self.all.iter().filter(|p| !p.ignored).cloned().collect()
+    }
+
     pub fn total(&self) -> usize {
         self.all.len()
     }
@@ -410,5 +438,46 @@ mod tests {
             0,
         );
         assert!(f.contains("Scoop: SWP-102 timeout"), "{f}");
+    }
+
+    #[test]
+    fn apply_settings_marks_ignored_and_pins_and_keeps_checks() {
+        let mut m = sample();
+        let s = sweepr_core::settings::Settings {
+            ignore: vec!["ripgrep".into()],
+            pins: [("Google.Chrome".to_string(), "121".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        m.apply_settings(&s);
+        assert!(m
+            .selected()
+            .iter()
+            .all(|p| p.id != "ripgrep" && p.id != "Google.Chrome"));
+        assert_eq!(m.visible_len(), 1, "ignored rows hidden");
+    }
+
+    #[test]
+    fn select_all_and_none_touch_only_visible_non_ignored() {
+        let mut m = sample();
+        m.select_all(false);
+        assert!(m.selected().is_empty());
+        m.set_filter("zip");
+        m.select_all(true);
+        m.set_filter("");
+        assert_eq!(m.selected().len(), 1);
+    }
+
+    #[test]
+    fn all_active_skips_ignored_but_ignores_checks_and_filter() {
+        let mut m = sample();
+        m.apply_settings(&sweepr_core::settings::Settings {
+            ignore: vec!["ripgrep".into()],
+            ..Default::default()
+        });
+        m.select_all(false);
+        m.set_filter("zip");
+        assert_eq!(m.all_active().len(), 2);
     }
 }

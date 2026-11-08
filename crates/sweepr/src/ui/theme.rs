@@ -3,7 +3,9 @@
 //! rules (3 charcoal levels, 4.5:1 text, 3:1 primary with white label); tested below.
 
 pub const DENSE_PX: i32 = 12;
+#[cfg(test)]
 pub const LABEL_PX: i32 = 13;
+#[cfg(test)]
 pub const CAPTION_PX: i32 = 11;
 pub const ROW_HEIGHT_PX: i32 = 28;
 

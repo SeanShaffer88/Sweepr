@@ -2,7 +2,8 @@
 
 mod cli;
 // Task 11 wires the remaining model/theme items; drop this allow then.
-#[allow(dead_code)]
+#[cfg_attr(not(windows), allow(dead_code))]
+// window code is Windows-only; logic is unit-tested on any host
 mod ui;
 
 fn main() {
