@@ -1,0 +1,9 @@
+Name                        Id                        Version        Available      Source
+-------------------------------------------------------------------------------------------
+Google Chrome               Google.Chrome             120.0.6099.109 121.0.6167.85  winget
+1 upgrades available.
+
+The following packages have an upgrade available, but require explicit upgrade:
+Name                        Id                        Version        Available      Source
+-------------------------------------------------------------------------------------------
+Foo Tool                    Foo.Tool                  < 2.0          2.5            winget
