@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod errors;
 pub mod exec;
 pub mod model;
+pub mod orchestrator;
 pub mod parse;
 pub mod rules;
 pub mod settings;
