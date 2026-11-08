@@ -55,7 +55,7 @@ pub(crate) fn slice_cells(line: &str, start: usize, end: Option<usize>) -> Strin
     let mut cell = 0;
     let mut out = String::new();
     for c in line.chars() {
-        if cell >= start && end.map_or(true, |e| cell < e) {
+        if cell >= start && end.is_none_or(|e| cell < e) {
             out.push(c);
         }
         cell += cell_width(c);
