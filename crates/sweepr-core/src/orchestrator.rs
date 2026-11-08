@@ -138,6 +138,7 @@ pub fn plan_queues(sel: &[UpdatePackage], is_elevated: bool) -> QueuePlan {
 }
 
 #[cfg(test)]
+#[cfg_attr(not(unix), allow(dead_code, unused_imports))]
 mod tests {
     use super::*;
     use crate::adapter::PackageManager;

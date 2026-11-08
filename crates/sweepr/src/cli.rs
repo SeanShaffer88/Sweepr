@@ -1,0 +1,359 @@
+//! Command line surface. The same exe is the GUI (no flags) and the headless CLI.
+
+use std::io::Write;
+use std::path::PathBuf;
+use sweepr_core::adapter::{all_adapters, PackageManager};
+use sweepr_core::errors::SwpError;
+use sweepr_core::exec::CancelToken;
+use sweepr_core::model::UpdatePackage;
+use sweepr_core::orchestrator::{discover, Event, Status};
+use sweepr_core::settings::{data_dir, Settings};
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Cli {
+    pub headless: bool,
+    pub json: bool,
+    pub dry_run: bool,
+    pub silent: bool,
+    pub verbose: bool,
+    pub debug: bool,
+    pub trace: bool,
+    pub help: bool,
+    pub version: bool,
+    pub elevated_run: Option<PathBuf>,
+    pub pipe: Option<String>,
+}
+
+pub const USAGE: &str = "Sweepr - one list of outdated software from WinGet, Chocolatey and Scoop.
+
+USAGE: sweepr [OPTIONS]        (no options starts the window)
+
+  --headless          list outdated packages without a window
+  --json              print the list as JSON (implies --headless)
+  --dry-run           also print the exact upgrade commands, run nothing (implies --headless)
+  --silent            no text list on stdout
+  --verbose, --debug, --trace   more detail on stderr
+  --elevated-run <job> --pipe <name>   internal: elevated helper
+  --version, --help
+
+Exit codes: 0 ok, 1 a manager failed (partial results), 2 usage error.
+";
+
+pub fn parse_args(args: &[String]) -> Result<Cli, String> {
+    let mut c = Cli::default();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--headless" => c.headless = true,
+            "--json" => c.json = true,
+            "--dry-run" => c.dry_run = true,
+            "--silent" => c.silent = true,
+            "--verbose" => c.verbose = true,
+            "--debug" => c.debug = true,
+            "--trace" => c.trace = true,
+            "--help" | "-h" => c.help = true,
+            "--version" => c.version = true,
+            "--elevated-run" => {
+                let v = it.next().ok_or("--elevated-run needs a job path")?;
+                c.elevated_run = Some(PathBuf::from(v));
+            }
+            "--pipe" => c.pipe = Some(it.next().ok_or("--pipe needs a name")?.clone()),
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
+    Ok(c)
+}
+
+/// Handles CLI modes. `None` means no CLI mode was asked for: start the GUI.
+pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Option<i32> {
+    if args.is_empty() {
+        return None;
+    }
+    let c = match parse_args(args) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = writeln!(err, "sweepr: {e}\n\n{USAGE}");
+            return Some(2);
+        }
+    };
+    if c.help {
+        let _ = write!(out, "{USAGE}");
+        return Some(0);
+    }
+    if c.version {
+        let _ = writeln!(out, "sweepr {}", env!("CARGO_PKG_VERSION"));
+        return Some(0);
+    }
+    if let Some(job) = &c.elevated_run {
+        let Some(pipe) = &c.pipe else {
+            let _ = writeln!(err, "sweepr: --elevated-run needs --pipe");
+            return Some(2);
+        };
+        return Some(elevated(job, pipe, err));
+    }
+    if c.headless || c.json || c.dry_run {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        let settings = Settings::load(&data_dir(&exe_dir)).settings;
+        return Some(run_headless_with(&c, &|| all_adapters(), &settings, out));
+    }
+    None
+}
+
+#[cfg(windows)]
+fn elevated(job: &std::path::Path, pipe: &str, _err: &mut dyn Write) -> i32 {
+    sweepr_core::elevation::win::run_helper(job, pipe)
+}
+
+#[cfg(not(windows))]
+fn elevated(_job: &std::path::Path, _pipe: &str, err: &mut dyn Write) -> i32 {
+    let _ = writeln!(err, "sweepr: --elevated-run is Windows only");
+    2
+}
+
+fn detail_on(c: &Cli) -> bool {
+    c.verbose || c.debug || c.trace
+}
+
+/// Discovery without a window. Missing managers are not failures; timeouts and parse errors are.
+pub fn run_headless_with(
+    c: &Cli,
+    factory: &dyn Fn() -> Vec<Box<dyn PackageManager>>,
+    settings: &Settings,
+    out: &mut dyn Write,
+) -> i32 {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = discover(factory(), settings, CancelToken::new(), tx);
+    let mut pkgs: Vec<UpdatePackage> = Vec::new();
+    let mut failed = false;
+    for ev in rx {
+        match ev {
+            Event::Found(_, p) => pkgs.extend(p),
+            Event::ManagerStatus(m, Status::Failed(e)) => {
+                if detail_on(c) || !matches!(e, SwpError::ManagerMissing(_)) {
+                    eprintln!("sweepr: {}: {e}", m.as_str());
+                }
+                if !matches!(e, SwpError::ManagerMissing(_)) {
+                    failed = true;
+                }
+            }
+            Event::Log(m, _, l) if c.debug || c.trace => eprintln!("[{}] {l}", m.as_str()),
+            Event::Done => break,
+            _ => {}
+        }
+    }
+    let _ = handle.join();
+    pkgs.retain(|p| !p.ignored);
+    pkgs.sort_by(|a, b| (a.manager, &a.id).cmp(&(b.manager, &b.id)));
+
+    let mut commands = Vec::new();
+    if c.dry_run {
+        let adapters = factory();
+        for p in &pkgs {
+            if let Some(a) = adapters.iter().find(|a| a.manager() == p.manager) {
+                match (a.detect(), a.dry_run_args(p)) {
+                    (Some(exe), Ok(args)) => {
+                        commands.push(format!("{} {}", exe.display(), args.join(" ")))
+                    }
+                    (_, Err(e)) => eprintln!("sweepr: {}: {e}", p.id),
+                    (None, _) => commands.push(format!("{} {}", a.manager().as_str(), p.id)),
+                }
+            }
+        }
+    }
+    if c.json {
+        let _ = serde_json::to_writer_pretty(&mut *out, &pkgs);
+        let _ = writeln!(out);
+        for l in &commands {
+            eprintln!("{l}");
+        }
+    } else {
+        if !c.silent {
+            for p in &pkgs {
+                let _ = writeln!(
+                    out,
+                    "{}\t{}\t{}\t{}",
+                    p.manager.as_str(),
+                    p.id,
+                    p.current_version,
+                    p.available_version
+                );
+            }
+        }
+        for l in &commands {
+            let _ = writeln!(out, "{l}");
+        }
+    }
+    i32::from(failed)
+}
+
+#[cfg(test)]
+#[cfg_attr(not(unix), allow(dead_code, unused_imports))]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use sweepr_core::adapter::PackageManager;
+    use sweepr_core::errors::SwpError;
+    use sweepr_core::model::{Manager, UpdatePackage};
+    use sweepr_core::settings::Settings;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parse_flags() {
+        let c = parse_args(&args(&["--headless", "--json", "--dry-run", "--verbose"])).unwrap();
+        assert!(c.headless && c.json && c.dry_run && c.verbose);
+        assert!(!c.silent && !c.debug && !c.trace);
+        let c = parse_args(&args(&[
+            "--elevated-run",
+            "C:\\j.json",
+            "--pipe",
+            "\\\\.\\pipe\\x",
+        ]))
+        .unwrap();
+        assert_eq!(c.elevated_run, Some(PathBuf::from("C:\\j.json")));
+        assert_eq!(c.pipe.as_deref(), Some("\\\\.\\pipe\\x"));
+    }
+
+    #[test]
+    fn unknown_flag_exit_2() {
+        assert!(parse_args(&args(&["--bogus"])).is_err());
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        assert_eq!(run(&args(&["--bogus"]), &mut o, &mut e), Some(2));
+        assert!(String::from_utf8(e).unwrap().contains("--bogus"));
+    }
+
+    #[test]
+    fn help_and_version_exit_0() {
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        assert_eq!(run(&args(&["--help"]), &mut o, &mut e), Some(0));
+        assert!(String::from_utf8(o).unwrap().contains("--headless"));
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        assert_eq!(run(&args(&["--version"]), &mut o, &mut e), Some(0));
+    }
+
+    #[test]
+    fn no_flags_means_gui() {
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        assert_eq!(run(&[], &mut o, &mut e), None);
+    }
+
+    struct Fake;
+    impl PackageManager for Fake {
+        fn manager(&self) -> Manager {
+            Manager::Choco
+        }
+        fn detect(&self) -> Option<PathBuf> {
+            Some(PathBuf::from("/bin/sh"))
+        }
+        fn discovery_args(&self) -> Vec<String> {
+            args(&["-c", "printf 'git|1.0|2.0|false\\n'"])
+        }
+        fn parse(&self, out: &str) -> Result<Vec<UpdatePackage>, SwpError> {
+            sweepr_core::parse::parse_choco(out)
+        }
+        fn upgrade_args(&self, _: &UpdatePackage) -> Result<Vec<String>, SwpError> {
+            Ok(args(&["-c", "touch /tmp/sweepr-cli-test-marker"]))
+        }
+        fn dry_run_args(&self, p: &UpdatePackage) -> Result<Vec<String>, SwpError> {
+            Ok(args(&["upgrade", &p.id, "-y", "--noop"]))
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn headless_json_output_shape() {
+        let c = parse_args(&args(&["--headless", "--json"])).unwrap();
+        let mut out = Vec::new();
+        let code = run_headless_with(&c, &|| vec![Box::new(Fake)], &Settings::default(), &mut out);
+        assert_eq!(code, 0);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["id"], "git");
+        assert_eq!(v[0]["manager"], "choco");
+        assert_eq!(v[0]["available_version"], "2.0");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dry_run_executes_nothing() {
+        let _ = std::fs::remove_file("/tmp/sweepr-cli-test-marker");
+        let c = parse_args(&args(&["--headless", "--dry-run"])).unwrap();
+        let mut out = Vec::new();
+        let code = run_headless_with(&c, &|| vec![Box::new(Fake)], &Settings::default(), &mut out);
+        assert_eq!(code, 0);
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("upgrade git -y --noop"), "{s}");
+        assert!(!std::path::Path::new("/tmp/sweepr-cli-test-marker").exists());
+    }
+
+    #[cfg(unix)]
+    struct Garbled;
+    #[cfg(unix)]
+    impl PackageManager for Garbled {
+        fn manager(&self) -> Manager {
+            Manager::Scoop
+        }
+        fn detect(&self) -> Option<PathBuf> {
+            Some(PathBuf::from("/bin/sh"))
+        }
+        fn discovery_args(&self) -> Vec<String> {
+            args(&["-c", "echo garbage"])
+        }
+        fn parse(&self, _: &str) -> Result<Vec<UpdatePackage>, SwpError> {
+            Err(SwpError::ParseFailed {
+                manager: Manager::Scoop,
+                detail: "x".into(),
+            })
+        }
+        fn upgrade_args(&self, _: &UpdatePackage) -> Result<Vec<String>, SwpError> {
+            Ok(vec![])
+        }
+    }
+
+    #[cfg(unix)]
+    struct Missing;
+    #[cfg(unix)]
+    impl PackageManager for Missing {
+        fn manager(&self) -> Manager {
+            Manager::Scoop
+        }
+        fn detect(&self) -> Option<PathBuf> {
+            None
+        }
+        fn discovery_args(&self) -> Vec<String> {
+            vec![]
+        }
+        fn parse(&self, _: &str) -> Result<Vec<UpdatePackage>, SwpError> {
+            Ok(vec![])
+        }
+        fn upgrade_args(&self, _: &UpdatePackage) -> Result<Vec<String>, SwpError> {
+            Ok(vec![])
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_manager_gives_exit_1_but_keeps_partial_results() {
+        let c = parse_args(&args(&["--headless", "--json"])).unwrap();
+        let mut out = Vec::new();
+        let f = || -> Vec<Box<dyn PackageManager>> { vec![Box::new(Fake), Box::new(Garbled)] };
+        let code = run_headless_with(&c, &f, &Settings::default(), &mut out);
+        assert_eq!(code, 1);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_manager_is_not_a_failure() {
+        let c = parse_args(&args(&["--headless", "--json"])).unwrap();
+        let mut out = Vec::new();
+        let f = || -> Vec<Box<dyn PackageManager>> { vec![Box::new(Fake), Box::new(Missing)] };
+        assert_eq!(run_headless_with(&c, &f, &Settings::default(), &mut out), 0);
+    }
+}
