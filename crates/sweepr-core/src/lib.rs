@@ -1,4 +1,5 @@
 pub mod errors;
+pub mod exec;
 pub mod model;
 pub mod parse;
 pub mod rules;
