@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod errors;
 pub mod exec;
 pub mod model;
