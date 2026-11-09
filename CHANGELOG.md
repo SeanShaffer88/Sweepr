@@ -11,6 +11,16 @@
 - CLI: headless list, JSON, dry-run.
 - Docs, fixture-capture script, CI workflow, packaging scripts.
 
+### Added (release-readiness)
+- Embedded application icon (crimson broom on charcoal), compiled from `sweepr.rc` by `build.rs` with the SDK resource compiler — no new dependencies.
+- CLI `--clean` (delete stored data, keep the program) and `--uninstall` (delete all stored data and its folder).
+- Settings key renamed `version` → `schema_version` with a tested upward migration; older files still load.
+- Field-pass checklist (docs/field-pass.md) covering the missing real Choco/Scoop captures, the Windows smoke test, the CLI and the installer.
+
+### Changed
+- Packaging now produces exactly `Sweepr-v<version>-x64-Setup.exe` (Inno Setup, per-user) + `Sweepr-v<version>-x64-Portable.zip` (now includes `portable.flag`) + `SHA256SUMS.txt`. The WiX MSI was removed.
+- Project classified tier t1b under the Adaptive Engineering Contract V4.0 (`.project-tier`, Project Manifest in AGENTS.md).
+
 ### Known gaps
 See [AUDIT.md](AUDIT.md) and [docs/limitations.md](docs/limitations.md). No release until real fixtures are captured and a Windows smoke test is done.
 
