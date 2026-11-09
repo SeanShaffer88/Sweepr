@@ -7,7 +7,7 @@ use sweepr_core::errors::SwpError;
 use sweepr_core::exec::CancelToken;
 use sweepr_core::model::UpdatePackage;
 use sweepr_core::orchestrator::{discover, Event, Status};
-use sweepr_core::settings::{data_dir, Settings};
+use sweepr_core::settings::{data_dir, remove_data, Settings};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Cli {
@@ -20,6 +20,8 @@ pub struct Cli {
     pub trace: bool,
     pub help: bool,
     pub version: bool,
+    pub clean: bool,
+    pub uninstall: bool,
     pub elevated_run: Option<PathBuf>,
     pub pipe: Option<String>,
 }
@@ -33,6 +35,10 @@ USAGE: sweepr [OPTIONS]        (no options starts the window)
   --dry-run           also print the exact upgrade commands, run nothing (implies --headless)
   --silent            no text list on stdout
   --verbose, --debug, --trace   more detail on stderr
+  --clean             delete Sweepr's stored data (settings, logs, jobs); the program stays
+  --uninstall         delete all of Sweepr's stored data and its data folder;
+                      remove the program itself from Settings > Apps (installed)
+                      or by deleting its folder (portable)
   --elevated-run <job> --pipe <name>   internal: elevated helper
   --version, --help
 
@@ -53,6 +59,8 @@ pub fn parse_args(args: &[String]) -> Result<Cli, String> {
             "--trace" => c.trace = true,
             "--help" | "-h" => c.help = true,
             "--version" => c.version = true,
+            "--clean" => c.clean = true,
+            "--uninstall" => c.uninstall = true,
             "--elevated-run" => {
                 let v = it.next().ok_or("--elevated-run needs a job path")?;
                 c.elevated_run = Some(PathBuf::from(v));
@@ -84,6 +92,13 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Option<
         let _ = writeln!(out, "sweepr {}", env!("CARGO_PKG_VERSION"));
         return Some(0);
     }
+    if c.clean || c.uninstall {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        return Some(clean(&data_dir(&exe_dir), c.uninstall, c.silent, out, err));
+    }
     if let Some(job) = &c.elevated_run {
         let Some(pipe) = &c.pipe else {
             let _ = writeln!(err, "sweepr: --elevated-run needs --pipe");
@@ -100,6 +115,48 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Option<
         return Some(run_headless_with(&c, &|| all_adapters(), &settings, out));
     }
     None
+}
+
+/// `--clean` / `--uninstall`: delete what Sweepr stored in its data dir.
+pub fn clean(
+    dir: &std::path::Path,
+    uninstall: bool,
+    silent: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    match remove_data(dir, uninstall) {
+        Ok(removed) => {
+            if !silent {
+                if removed.is_empty() {
+                    let _ = writeln!(out, "sweepr: nothing stored at {}", dir.display());
+                } else {
+                    for p in &removed {
+                        let _ = writeln!(out, "removed {}", p.display());
+                    }
+                    if uninstall {
+                        let _ = writeln!(
+                            out,
+                            "sweepr: data removed. Remove the program from Settings > Apps \
+                             (installed) or by deleting its folder (portable)."
+                        );
+                    } else {
+                        let _ =
+                            writeln!(out, "sweepr: data removed; settings are back to defaults.");
+                    }
+                }
+            }
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(
+                err,
+                "sweepr: could not remove data at {}: {e}",
+                dir.display()
+            );
+            1
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -225,6 +282,35 @@ mod tests {
         let (mut o, mut e) = (Vec::new(), Vec::new());
         assert_eq!(run(&args(&["--bogus"]), &mut o, &mut e), Some(2));
         assert!(String::from_utf8(e).unwrap().contains("--bogus"));
+    }
+
+    #[test]
+    fn clean_and_uninstall_flags_parse() {
+        let c = parse_args(&args(&["--clean"])).unwrap();
+        assert!(c.clean && !c.uninstall);
+        let c = parse_args(&args(&["--uninstall"])).unwrap();
+        assert!(c.uninstall && !c.clean);
+    }
+
+    #[test]
+    fn clean_removes_data_and_reports() {
+        let d = std::env::temp_dir().join(format!("sweepr-cli-clean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("settings.json"), "{}").unwrap();
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        assert_eq!(clean(&d, false, false, &mut o, &mut e), 0);
+        assert!(d.exists());
+        assert!(std::fs::read_dir(&d).unwrap().next().is_none());
+        let s = String::from_utf8(o).unwrap();
+        assert!(s.contains("settings.json"), "{s}");
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        assert_eq!(clean(&d, true, false, &mut o, &mut e), 0);
+        assert!(!d.exists());
+        // Missing dir is fine, not an error.
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        assert_eq!(clean(&d, true, false, &mut o, &mut e), 0);
+        assert!(String::from_utf8(o).unwrap().contains("nothing stored"));
     }
 
     #[test]
