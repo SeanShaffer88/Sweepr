@@ -16,10 +16,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo build --release --locked
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
       - name: Package
         shell: pwsh
         run: ./packaging/package.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: sweepr-portable
+          name: sweepr-release-assets
           path: dist/*
