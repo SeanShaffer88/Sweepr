@@ -1,0 +1,16 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Sweepr" Manufacturer="Sean Shaffer" Version="$(Version)" UpgradeCode="6F3A2B1C-8D4E-4A7B-9C5D-2E1F0A3B4C5D" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Sweepr is installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Sweepr">
+        <Component Id="MainExe" Guid="*">
+          <File Id="SweeprExe" Source="$(Exe)" KeyPath="yes">
+            <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Sweepr" WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
+          </File>
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="Main"><ComponentRef Id="MainExe" /></Feature>
+  </Package>
+</Wix>

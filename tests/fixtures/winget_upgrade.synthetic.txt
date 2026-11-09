@@ -1,0 +1,9 @@
+  -    \    |    /    -  
+  ██▒▒▒▒▒▒▒▒  30%  
+
+Name                        Id                        Version        Available      Source
+-------------------------------------------------------------------------------------------
+Google Chrome               Google.Chrome             120.0.6099.109 121.0.6167.85  winget
+Mozilla Firefox (x64 en-US) Mozilla.Firefox           120.0          121.0          winget
+7-Zip                       7zip.7zip                 Unknown        24.07          winget
+3 upgrades available.
