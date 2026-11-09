@@ -13,6 +13,10 @@
 | Job file holds only `{manager, id, scope}` | Helper never runs caller-supplied command lines. |
 | WinGet scope Unknown goes to the user queue | Avoids needless UAC; may fail and be retried manually. |
 | Headless lists only | `--update-all` deferred until a real-machine test. |
-| No animation, no embedded icon | Keep v0.1.0 small; TesselGUI allows no ambient motion. |
+| No animation | Keep v0.1.0 small; TesselGUI allows no ambient motion. |
+| Embedded icon via `rc.exe` from `build.rs` | An icon was added in the release-readiness slice; compiling `sweepr.rc` with the SDK resource compiler keeps the dependency list at three crates (no `winresource` build dependency). |
+| Inno Setup installer; no MSI | Release shape is Setup.exe + Portable.zip + SHA256SUMS.txt only. The earlier WiX MSI was removed. |
+| Settings key `schema_version` | Contract V4.0 §2.3 naming; the legacy `version` key still loads and migrates on save. |
+| Tier t1b | Stock Win32 GUI utility: no rich renderer, service, driver, shell extension or autostart. |
 | Neutral palette hex chosen by contrast tests | TesselGUI gives primary `#D02946` and accent `#76172A` only. |
 | Log drawer is one text box with stream prefixes | Tabs deferred. |

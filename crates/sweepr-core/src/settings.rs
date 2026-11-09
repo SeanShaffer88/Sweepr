@@ -53,6 +53,9 @@ impl Default for Sources {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Serialized as `schema_version`; files written before the rename used
+    /// `version`, which `load` still accepts (upward migration).
+    #[serde(rename = "schema_version")]
     pub version: u32,
     /// Package ids excluded from "Update all".
     pub ignore: Vec<String>,
@@ -106,7 +109,11 @@ impl Settings {
             Ok(v) => v,
             Err(e) => return corrupt(&path, e.to_string()),
         };
-        let ver = value.get("version").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+        let ver = value
+            .get("schema_version")
+            .or_else(|| value.get("version"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1) as u32;
         if ver > SETTINGS_VERSION {
             return LoadResult {
                 settings: Settings { read_only: true, ..Settings::default() },
@@ -222,6 +229,31 @@ pub fn clamp_window(w: WindowState, monitors: &[Rect]) -> WindowState {
     }
 }
 
+/// Remove everything Sweepr stored in `dir` (settings, logs, job files and
+/// journals live there). With `remove_dir_itself` the directory goes too
+/// (`--uninstall`); without it only its contents go (`--clean`).
+/// Returns the top-level entries that were removed. A missing directory is
+/// not an error: it returns an empty list.
+pub fn remove_data(dir: &Path, remove_dir_itself: bool) -> std::io::Result<Vec<PathBuf>> {
+    let mut removed = Vec::new();
+    if dir.exists() {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path)?;
+            } else {
+                std::fs::remove_file(&path)?;
+            }
+            removed.push(path);
+        }
+        if remove_dir_itself {
+            std::fs::remove_dir(dir)?;
+        }
+    }
+    removed.sort();
+    Ok(removed)
+}
+
 /// Portable (`portable.flag` beside the exe) uses `data\`; installed uses `%LOCALAPPDATA%\Sweepr`.
 pub fn data_dir(exe_dir: &Path) -> PathBuf {
     if exe_dir.join("portable.flag").exists() {
@@ -288,6 +320,55 @@ mod tests {
                 .starts_with("settings.json.bad-")
         });
         assert!(bad);
+    }
+
+    #[test]
+    fn legacy_version_key_migrates_to_schema_version() {
+        let d = tmp("legacy");
+        fs::write(
+            d.join("settings.json"),
+            r#"{"version":1,"ignore":["Old.App"],"timeout_secs":45}"#,
+        )
+        .unwrap();
+        let r = Settings::load(&d);
+        assert!(r.notice.is_none());
+        assert_eq!(r.settings.ignore, ["Old.App"]);
+        assert_eq!(r.settings.timeout_secs, 45);
+        r.settings.save(&d).unwrap();
+        let saved = fs::read_to_string(d.join("settings.json")).unwrap();
+        assert!(saved.contains("\"schema_version\": 1"), "{saved}");
+        assert!(!saved.contains("\"version\":"), "{saved}");
+    }
+
+    #[test]
+    fn newer_schema_version_is_not_overwritten() {
+        let d = tmp("newer2");
+        let original = r#"{"schema_version":99,"ignore":["x"],"future_field":true}"#;
+        fs::write(d.join("settings.json"), original).unwrap();
+        let r = Settings::load(&d);
+        assert!(r.settings.read_only);
+        r.settings.save(&d).unwrap();
+        assert_eq!(
+            fs::read_to_string(d.join("settings.json")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn remove_data_cleans_contents_and_optionally_the_dir() {
+        let d = tmp("clean");
+        fs::write(d.join("settings.json"), "{}").unwrap();
+        fs::create_dir_all(d.join("jobs")).unwrap();
+        fs::write(d.join("jobs").join("job1.json"), "{}").unwrap();
+        let removed = remove_data(&d, false).unwrap();
+        assert_eq!(removed.len(), 2);
+        assert!(d.exists());
+        assert!(fs::read_dir(&d).unwrap().next().is_none());
+        fs::write(d.join("settings.json"), "{}").unwrap();
+        let removed = remove_data(&d, true).unwrap();
+        assert_eq!(removed.len(), 1);
+        assert!(!d.exists());
+        assert!(remove_data(&d, true).unwrap().is_empty());
     }
 
     #[test]

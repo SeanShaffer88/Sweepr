@@ -16,7 +16,9 @@ Development ran in a Linux sandbox. Windows code was cross-checked (`cargo check
 | Keyboard-only walkthrough | **Unverified** | |
 | CLI | **Partially verified** | Host tests with fake adapters; real managers not run. |
 | CI build on windows-latest (fmt, clippy, tests, release build, portable zip, SHA256SUMS) | **Verified** (PR #1 run) | Build and tests only; the app was not launched. |
-| MSI | **Unverified** | CI runner had no WiX; MSI step skipped. |
+| Packaging (Setup.exe + Portable.zip + SHA256SUMS.txt) | **Unverified** | Inno Setup script and naming reworked in the release-readiness slice; the installer has never been run. No MSI is produced. |
+| Embedded icon | **Unverified** | `build.rs` compiles `sweepr.rc` with rc.exe on windows-msvc builds; the exe has not been inspected on Windows yet (field pass step 12). |
+| `--clean` / `--uninstall`, `schema_version` migration | **Verified** (Linux unit tests) | Data removal and the legacy `version` → `schema_version` migration are covered by tests; not yet run on Windows. |
 
 ## Risks
 
@@ -30,3 +32,4 @@ Development ran in a Linux sandbox. Windows code was cross-checked (`cargo check
 1. Capture real Choco output with at least one outdated package, and Scoop output (install Scoop or use a machine that has it). WinGet capture done.
 2. Smoke test on Windows 10 and 11: check, update user package, update system package (one UAC), cancel, theme switch, DPI change.
 3. CI green on windows-latest (done for PR #1).
+4. Steps 1–2 are written up as a single sitting in [docs/field-pass.md](docs/field-pass.md), which also covers the installer, the CLI maintenance flags and the icon.

@@ -1,0 +1,3 @@
+// Application icon, resource id 1 (loaded in ui/window.rs).
+// Compiled by build.rs with rc.exe on windows-msvc builds.
+1 ICON "sweepr.ico"
