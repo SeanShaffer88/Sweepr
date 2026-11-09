@@ -15,7 +15,8 @@ Development ran in a Linux sandbox. Windows code was cross-checked (`cargo check
 | Win32 GUI (layout, DPI, tooltips, owner-draw, accelerators, dark mode) | **Unverified** | Compiles and lints on msvc target. |
 | Keyboard-only walkthrough | **Unverified** | |
 | CLI | **Partially verified** | Host tests with fake adapters; real managers not run. |
-| CI, MSI, portable zip | **Unverified** | Not yet run. |
+| CI build on windows-latest (fmt, clippy, tests, release build, portable zip, SHA256SUMS) | **Verified** (PR #1 run) | Build and tests only; the app was not launched. |
+| MSI | **Unverified** | CI runner had no WiX; MSI step skipped. |
 
 ## Risks
 
@@ -28,4 +29,4 @@ Development ran in a Linux sandbox. Windows code was cross-checked (`cargo check
 
 1. Run fixture capture and replace synthetic fixtures.
 2. Smoke test on Windows 10 and 11: check, update user package, update system package (one UAC), cancel, theme switch, DPI change.
-3. CI green on windows-latest.
+3. CI green on windows-latest (done for PR #1).
