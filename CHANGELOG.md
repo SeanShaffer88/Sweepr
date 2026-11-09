@@ -13,3 +13,6 @@
 
 ### Known gaps
 See [AUDIT.md](AUDIT.md) and [docs/limitations.md](docs/limitations.md). No release until real fixtures are captured and a Windows smoke test is done.
+
+### Tests
+- Real WinGet and Choco (empty) captures added as fixtures with parser tests.

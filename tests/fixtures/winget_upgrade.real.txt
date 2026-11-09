@@ -1,0 +1,8 @@
+Name            Id                      Version  Available Source
+-----------------------------------------------------------------
+Python Launcher Python.Launcher         < 3.15.2 3.15.2    winget
+qBittorrent     qBittorrent.qBittorrent 5.2.4.10 5.3.0     winget
+TeraCopy        CodeSector.TeraCopy     3.17     4.0.5     winget
+3 upgrades available.
+2 package(s) have version numbers that cannot be determined. Use --include-unknown to see all results.
+

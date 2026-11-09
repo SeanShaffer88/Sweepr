@@ -7,7 +7,7 @@ Development ran in a Linux sandbox. Windows code was cross-checked (`cargo check
 | Area | Label | Notes |
 |---|---|---|
 | Model, error codes, id validator, rules, settings, job validation | **Verified** (Linux unit tests, 87 tests) | |
-| Parsers (WinGet, Choco, Scoop) | **Unverified** against real output | Only synthetic fixtures (`*.synthetic.txt`). Run `tools/capture-fixtures.ps1`, add `*.real.txt`, parameterize tests. WinGet header is localized. |
+| Parsers | **Partially verified** | WinGet: real capture (v1.30.140-preview, Win 10.0.26300, en-US, 3 rows incl. `< ` version) parses correctly. Choco 2.7.5: real capture is the empty case only; non-empty real output Unverified. Scoop: not installed on the test machine, so real output Unverified. Non-English WinGet Unverified. WinGet hides unknown-version packages unless `--include-unknown`; Sweepr does not pass it. |
 | List model, sort, filter, status text, command palette filter | **Verified** (unit tests) | |
 | Theme contrast | **Verified** (computed in tests) | |
 | Process execution, timeouts, tree kill | **Partially verified** | Unix path tested; Job Object path compiled only. |
@@ -27,6 +27,6 @@ Development ran in a Linux sandbox. Windows code was cross-checked (`cargo check
 
 ## Gate before release
 
-1. Run fixture capture and replace synthetic fixtures.
+1. Capture real Choco output with at least one outdated package, and Scoop output (install Scoop or use a machine that has it). WinGet capture done.
 2. Smoke test on Windows 10 and 11: check, update user package, update system package (one UAC), cancel, theme switch, DPI change.
 3. CI green on windows-latest (done for PR #1).
