@@ -1,0 +1,49 @@
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (e.g. v0.1.0)"
+        required: true
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo build --release --locked
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+      - name: Package
+        shell: pwsh
+        run: ./packaging/package.ps1
+      - name: Extract release notes
+        shell: pwsh
+        run: |
+          $ver = "${{ inputs.tag }}".TrimStart('v')
+          $lines = Get-Content CHANGELOG.md
+          $start = ($lines | Select-String -SimpleMatch "## [$ver]").LineNumber
+          if (-not $start) { throw "No changelog section for $ver" }
+          $lines[($start - 1)..($lines.Count - 1)] | Set-Content release-notes.md -Encoding UTF8
+      - name: Create release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ver = "${{ inputs.tag }}".TrimStart('v')
+          gh release create "${{ inputs.tag }}" `
+            "dist/Sweepr-v$ver-x64-Setup.exe" `
+            "dist/Sweepr-v$ver-x64-Portable.zip" `
+            "dist/SHA256SUMS.txt" `
+            --title "Sweepr ${{ inputs.tag }}" `
+            --notes-file release-notes.md `
+            --target main
