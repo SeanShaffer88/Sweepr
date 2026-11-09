@@ -8,7 +8,7 @@ One window. Every outdated app. Update them all with at most one UAC prompt.
 
 Sweepr is a small native Windows updater over **WinGet**, **Chocolatey** and **Scoop**. It lists what is outdated, lets you pick, and updates. It works offline apart from what the managers themselves do. No telemetry. No accounts. No background service.
 
-> Status: **v0.1.0 in development, not released.** The parser for WinGet is verified against a real capture; the Windows GUI and the elevation path have been cross-compiled only and never run. See [AUDIT.md](AUDIT.md) and the [field pass](docs/field-pass.md).
+> Status: **v0.1.0 released.** The parser for WinGet is verified against a real capture; the Windows GUI and the elevation path have been cross-compiled only and not yet run on a real machine — the [field pass](docs/field-pass.md) is still to run. See [AUDIT.md](AUDIT.md).
 
 ## Features
 

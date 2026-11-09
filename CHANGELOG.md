@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] - 0.1.0
+## [0.1.0] - 2026-11-08
 
 ### Added
 - Core library: models, error codes SWP-101..401, id validator, WinGet/Choco/Scoop parsers, settings with atomic write, ignore and pin rules.
@@ -25,7 +25,7 @@
 - Project classified tier t1b under the Adaptive Engineering Contract V4.0 (`.project-tier`, Project Manifest in AGENTS.md).
 
 ### Known gaps
-See [AUDIT.md](AUDIT.md) and [docs/limitations.md](docs/limitations.md). No release until real fixtures are captured and a Windows smoke test is done.
+See [AUDIT.md](AUDIT.md) and [docs/limitations.md](docs/limitations.md). Released ahead of the real-machine field pass at the owner's direction; the GUI and elevation path remain Unverified until [docs/field-pass.md](docs/field-pass.md) has been run.
 
 ### Tests
 - Real WinGet and Choco (empty) captures added as fixtures with parser tests.
