@@ -19,6 +19,7 @@ Development ran in a Linux sandbox. Windows code was cross-checked (`cargo check
 | Packaging (Setup.exe + Portable.zip + SHA256SUMS.txt) | **Unverified** | Inno Setup script and naming reworked in the release-readiness slice; the installer has never been run. No MSI is produced. |
 | Embedded icon | **Unverified** | `build.rs` compiles `sweepr.rc` with rc.exe on windows-msvc builds; the exe has not been inspected on Windows yet (field pass step 12). |
 | `--clean` / `--uninstall`, `schema_version` migration | **Verified** (Linux unit tests) | Data removal and the legacy `version` → `schema_version` migration are covered by tests; not yet run on Windows. |
+| Headless `--update-all` | **Partially verified** | The user-queue path is covered by a host test that really runs a (fake) upgrade; the system queue reuses the GUI's elevation flow, which is Unverified until the field pass. |
 
 ## Risks
 
