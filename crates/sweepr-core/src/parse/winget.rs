@@ -130,6 +130,23 @@ mod tests {
     }
 
     #[test]
+    fn winget_real_capture_v1_30_preview() {
+        // Captured from winget v1.30.140-preview, Windows 10.0.26300, en-US.
+        let out = include_str!("../../../../tests/fixtures/winget_upgrade.real.txt");
+        let v = parse_winget(out).unwrap();
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[0].name, "Python Launcher");
+        assert_eq!(v[0].id, "Python.Launcher");
+        assert_eq!(v[0].current_version, "< 3.15.2");
+        assert_eq!(v[0].available_version, "3.15.2");
+        assert_eq!(v[1].id, "qBittorrent.qBittorrent");
+        assert_eq!(v[1].current_version, "5.2.4.10");
+        assert_eq!(v[1].available_version, "5.3.0");
+        assert_eq!(v[2].id, "CodeSector.TeraCopy");
+        assert_eq!(v[2].available_version, "4.0.5");
+    }
+
+    #[test]
     fn garbled_winget_without_header_is_parse_failed() {
         let e = parse_winget("Google Chrome   Google.Chrome   120   121\n").unwrap_err();
         assert_eq!(e.code(), "SWP-103");

@@ -1,0 +1,3 @@
+Windows: Microsoft Windows NT 10.0.26300.0 | UI culture: en-US
+winget v1.30.140-preview
+choco 2.7.5

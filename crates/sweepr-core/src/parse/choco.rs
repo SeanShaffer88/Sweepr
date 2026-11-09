@@ -51,6 +51,13 @@ mod tests {
     }
 
     #[test]
+    fn choco_real_capture_nothing_outdated_is_empty_ok() {
+        // Captured from choco 2.7.5 with --limit-output: no output when nothing is outdated.
+        let out = include_str!("../../../../tests/fixtures/choco_outdated.real.txt");
+        assert!(parse_choco(out).unwrap().is_empty());
+    }
+
+    #[test]
     fn choco_bad_line_is_parse_failed() {
         let e = parse_choco("git|2.43.0\n").unwrap_err();
         assert_eq!(e.code(), "SWP-103");
