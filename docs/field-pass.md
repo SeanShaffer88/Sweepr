@@ -36,6 +36,8 @@ Use `Sweepr-v0.1.0-x64-Portable.zip` unpacked anywhere.
 
 13. `sweepr.exe --headless` lists the same outdated set as the window.
 14. `sweepr.exe --headless --json` prints valid JSON.
+14b. `sweepr.exe --update-all --dry-run` prints commands and changes nothing;
+    then `sweepr.exe --update-all` updates the lot with at most one UAC prompt.
 15. `sweepr.exe --clean` removes the `data` folder contents next to the exe
     and reports what it removed; relaunch shows default settings.
 16. `sweepr.exe --uninstall` removes the `data` folder itself.

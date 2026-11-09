@@ -2,7 +2,6 @@
 
 - WinGet parser is verified against a real capture; Chocolatey's real capture covers the empty case only, and Scoop has no real capture yet. Other real output may differ.
 - WinGet table headers are localized; non-English Windows is Unverified.
-- Headless `--update-all` not implemented.
 - No transfer speed or byte counts; status shows per-package state.
 - ListView gridlines are not dark-themed.
 - WinGet packages with unknown scope run in the user queue.

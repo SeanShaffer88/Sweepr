@@ -40,11 +40,13 @@ Sweepr is a small native Windows updater over **WinGet**, **Chocolatey** and **S
 sweepr.exe --headless            list outdated packages as text
 sweepr.exe --headless --json     list as JSON
 sweepr.exe --headless --dry-run  show what would run, run nothing
+sweepr.exe --update-all          update every outdated package (one UAC prompt for system packages)
+sweepr.exe --update-all --json   update all, report results as JSON
 sweepr.exe --clean               delete Sweepr's stored data (settings, logs, jobs)
 sweepr.exe --uninstall           delete all stored data and its data folder
 ```
 
-Other flags: `--silent --verbose --debug --trace --help --version`. Exit codes: 0 ok, 1 error, 2 bad arguments. Headless mode lists only; `--update-all` is deferred (see [docs/limitations.md](docs/limitations.md)).
+Other flags: `--silent --verbose --debug --trace --help --version`. Exit codes: 0 ok, 1 error, 2 bad arguments. `--update-all --dry-run` prints the commands and runs nothing.
 
 ## Download
 

@@ -11,6 +11,9 @@
 - CLI: headless list, JSON, dry-run.
 - Docs, fixture-capture script, CI workflow, packaging scripts.
 
+### Added (headless update)
+- CLI `--update-all`: updates every outdated, non-ignored package from the command line, reusing the window's queue split and one-UAC elevation flow. `--dry-run` prints the commands and runs nothing; `--json` reports per-package results.
+
 ### Added (release-readiness)
 - Embedded application icon (crimson broom on charcoal), compiled from `sweepr.rc` by `build.rs` with the SDK resource compiler — no new dependencies.
 - CLI `--clean` (delete stored data, keep the program) and `--uninstall` (delete all stored data and its folder).
