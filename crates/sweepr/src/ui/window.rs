@@ -226,6 +226,9 @@ pub fn run_gui(settings: Settings, notice: Option<SwpError>, data_dir: PathBuf) 
 
         let hinst = GetModuleHandleW(std::ptr::null());
         let class = wide(CLASS);
+        // Resource id 1 is the embedded application icon (see sweepr.rc);
+        // LoadIconW returns null when it is absent, which falls back cleanly.
+        let icon = LoadIconW(hinst, std::ptr::without_provenance::<u16>(1)); // MAKEINTRESOURCE(1)
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: CS_HREDRAW | CS_VREDRAW,
@@ -233,12 +236,12 @@ pub fn run_gui(settings: Settings, notice: Option<SwpError>, data_dir: PathBuf) 
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: hinst,
-            hIcon: std::ptr::null_mut(),
+            hIcon: icon,
             hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
             hbrBackground: std::ptr::null_mut(),
             lpszMenuName: std::ptr::null(),
             lpszClassName: class.as_ptr(),
-            hIconSm: std::ptr::null_mut(),
+            hIconSm: icon,
         };
         RegisterClassExW(&wc);
 
