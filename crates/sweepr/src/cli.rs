@@ -14,6 +14,7 @@ pub struct Cli {
     pub headless: bool,
     pub json: bool,
     pub dry_run: bool,
+    pub update_all: bool,
     pub silent: bool,
     pub verbose: bool,
     pub debug: bool,
@@ -33,6 +34,8 @@ USAGE: sweepr [OPTIONS]        (no options starts the window)
   --headless          list outdated packages without a window
   --json              print the list as JSON (implies --headless)
   --dry-run           also print the exact upgrade commands, run nothing (implies --headless)
+  --update-all        update every outdated package (implies --headless);
+                      system-scope packages share one UAC prompt on Windows
   --silent            no text list on stdout
   --verbose, --debug, --trace   more detail on stderr
   --clean             delete Sweepr's stored data (settings, logs, jobs); the program stays
@@ -53,6 +56,7 @@ pub fn parse_args(args: &[String]) -> Result<Cli, String> {
             "--headless" => c.headless = true,
             "--json" => c.json = true,
             "--dry-run" => c.dry_run = true,
+            "--update-all" => c.update_all = true,
             "--silent" => c.silent = true,
             "--verbose" => c.verbose = true,
             "--debug" => c.debug = true,
@@ -106,12 +110,23 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Option<
         };
         return Some(elevated(job, pipe, err));
     }
-    if c.headless || c.json || c.dry_run {
+    if c.headless || c.json || c.dry_run || c.update_all {
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .unwrap_or_default();
-        let settings = Settings::load(&data_dir(&exe_dir)).settings;
+        let dir = data_dir(&exe_dir);
+        let settings = Settings::load(&dir).settings;
+        if c.update_all && !c.dry_run {
+            return Some(update_all(
+                &c,
+                &|| all_adapters(),
+                &settings,
+                &dir,
+                out,
+                err,
+            ));
+        }
         return Some(run_headless_with(&c, &|| all_adapters(), &settings, out));
     }
     None
@@ -246,6 +261,215 @@ pub fn run_headless_with(
     i32::from(failed)
 }
 
+/// One updated package's outcome, for text or JSON reporting.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UpdateResult {
+    pub manager: sweepr_core::model::Manager,
+    pub id: String,
+    pub ok: bool,
+    pub code: Option<i32>,
+}
+
+/// Runs one job in-process and collects per-item results from the wire stream.
+fn run_job_in_process(
+    job: &sweepr_core::job::Job,
+    factory: &dyn Fn() -> Vec<Box<dyn PackageManager>>,
+    results: &mut Vec<UpdateResult>,
+) -> i32 {
+    let adapters = factory();
+    let mut sink_results: Vec<(String, bool, Option<i32>)> = Vec::new();
+    let code = sweepr_core::elevation::execute_job(
+        job,
+        &adapters,
+        &mut sweepr_core::elevation::RealRunner,
+        &CancelToken::new(),
+        &mut |w| {
+            if let sweepr_core::elevation::Wire::Item { id, state, code } = w {
+                if state != sweepr_core::elevation::ItemState::Started {
+                    sink_results.push((id, state == sweepr_core::elevation::ItemState::Done, code));
+                }
+            }
+        },
+    );
+    for it in &job.items {
+        let (ok, c) = sink_results
+            .iter()
+            .find(|(id, _, _)| *id == it.id)
+            .map(|(_, ok, c)| (*ok, *c))
+            .unwrap_or((false, None));
+        results.push(UpdateResult {
+            manager: it.manager,
+            id: it.id.clone(),
+            ok,
+            code: c,
+        });
+    }
+    code
+}
+
+/// `--update-all`: discover, then update everything not ignored or pinned.
+/// User-scope packages run in-process; the system queue shares one UAC
+/// prompt on Windows (the same flow as the window). `--dry-run` never
+/// reaches this function: `run` routes it to the listing instead.
+pub fn update_all(
+    c: &Cli,
+    factory: &dyn Fn() -> Vec<Box<dyn PackageManager>>,
+    settings: &Settings,
+    dir: &std::path::Path,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = discover(factory(), settings, CancelToken::new(), tx);
+    let mut pkgs: Vec<UpdatePackage> = Vec::new();
+    let mut failed = false;
+    for ev in rx {
+        match ev {
+            Event::Found(_, p) => pkgs.extend(p),
+            Event::ManagerStatus(m, Status::Failed(e)) => {
+                if !matches!(e, SwpError::ManagerMissing(_)) {
+                    let _ = writeln!(err, "sweepr: {}: {e}", m.as_str());
+                    failed = true;
+                }
+            }
+            Event::Done => break,
+            _ => {}
+        }
+    }
+    let _ = handle.join();
+    pkgs.retain(|p| !p.ignored);
+    if pkgs.is_empty() {
+        if !c.silent && !c.json {
+            let _ = writeln!(out, "everything is up to date");
+        }
+        if c.json {
+            let _ = writeln!(out, "[]");
+        }
+        return i32::from(failed);
+    }
+
+    let elevated = is_elevated();
+    let (user, sys) = crate::ui::actions::build_jobs(&pkgs, elevated);
+    let mut results: Vec<UpdateResult> = Vec::new();
+    if let Some(job) = &user {
+        if run_job_in_process(job, factory, &mut results) != 0 {
+            failed = true;
+        }
+    }
+    if let Some(job) = &sys {
+        if elevated {
+            if run_job_in_process(job, factory, &mut results) != 0 {
+                failed = true;
+            }
+        } else if !run_system_job(job, dir, &mut results, err) {
+            failed = true;
+        }
+    }
+    if results.iter().any(|r| !r.ok) {
+        failed = true;
+    }
+
+    if c.json {
+        let _ = serde_json::to_writer_pretty(&mut *out, &results);
+        let _ = writeln!(out);
+    } else if !c.silent {
+        for r in &results {
+            let _ = writeln!(
+                out,
+                "{}\t{}\t{}",
+                r.manager.as_str(),
+                r.id,
+                if r.ok { "updated" } else { "FAILED" }
+            );
+        }
+    }
+    i32::from(failed)
+}
+
+#[cfg(windows)]
+fn is_elevated() -> bool {
+    sweepr_core::elevation::win::is_elevated()
+}
+
+#[cfg(not(windows))]
+fn is_elevated() -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn run_system_job(
+    job: &sweepr_core::job::Job,
+    dir: &std::path::Path,
+    results: &mut Vec<UpdateResult>,
+    err: &mut dyn Write,
+) -> bool {
+    let mut sink_results: Vec<(String, bool, Option<i32>)> = Vec::new();
+    let r = sweepr_core::elevation::win::run_elevated(dir, job, &CancelToken::new(), &mut |w| {
+        if let sweepr_core::elevation::Wire::Item { id, state, code } = w {
+            if *state != sweepr_core::elevation::ItemState::Started {
+                sink_results.push((
+                    id.clone(),
+                    *state == sweepr_core::elevation::ItemState::Done,
+                    *code,
+                ));
+            }
+        }
+    });
+    match r {
+        Ok(_) => {
+            for it in &job.items {
+                let (ok, c) = sink_results
+                    .iter()
+                    .find(|(id, _, _)| *id == it.id)
+                    .map(|(_, ok, c)| (*ok, *c))
+                    .unwrap_or((false, None));
+                results.push(UpdateResult {
+                    manager: it.manager,
+                    id: it.id.clone(),
+                    ok,
+                    code: c,
+                });
+            }
+            true
+        }
+        Err(e) => {
+            let _ = writeln!(err, "sweepr: {e}");
+            for it in &job.items {
+                results.push(UpdateResult {
+                    manager: it.manager,
+                    id: it.id.clone(),
+                    ok: false,
+                    code: None,
+                });
+            }
+            false
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn run_system_job(
+    job: &sweepr_core::job::Job,
+    _dir: &std::path::Path,
+    results: &mut Vec<UpdateResult>,
+    err: &mut dyn Write,
+) -> bool {
+    let _ = writeln!(
+        err,
+        "sweepr: system-scope updates need Windows elevation; {} package(s) skipped",
+        job.items.len()
+    );
+    for it in &job.items {
+        results.push(UpdateResult {
+            manager: it.manager,
+            id: it.id.clone(),
+            ok: false,
+            code: None,
+        });
+    }
+    false
+}
+
 #[cfg(test)]
 #[cfg_attr(not(unix), allow(dead_code, unused_imports))]
 mod tests {
@@ -362,6 +586,60 @@ mod tests {
         assert_eq!(v[0]["id"], "git");
         assert_eq!(v[0]["manager"], "choco");
         assert_eq!(v[0]["available_version"], "2.0");
+    }
+
+    #[cfg(unix)]
+    struct UserFake;
+    #[cfg(unix)]
+    impl PackageManager for UserFake {
+        fn manager(&self) -> Manager {
+            Manager::Scoop
+        }
+        fn detect(&self) -> Option<PathBuf> {
+            Some(PathBuf::from("/bin/sh"))
+        }
+        fn discovery_args(&self) -> Vec<String> {
+            args(&["-c", "printf 'x\\n'"])
+        }
+        fn parse(&self, _: &str) -> Result<Vec<UpdatePackage>, SwpError> {
+            Ok(vec![UpdatePackage {
+                id: "fd".into(),
+                name: "fd".into(),
+                current_version: "1".into(),
+                available_version: "2".into(),
+                manager: Manager::Scoop,
+                scope: sweepr_core::model::Scope::User,
+                elevation_required: false,
+                pinned_by_manager: false,
+                ignored: false,
+                user_pin: None,
+            }])
+        }
+        fn upgrade_args(&self, _: &UpdatePackage) -> Result<Vec<String>, SwpError> {
+            Ok(args(&["-c", "touch /tmp/sweepr-update-all-marker"]))
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_all_runs_user_queue_and_reports() {
+        let _ = std::fs::remove_file("/tmp/sweepr-update-all-marker");
+        let c = parse_args(&args(&["--update-all"])).unwrap();
+        assert!(c.update_all);
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let d = std::env::temp_dir().join(format!("sweepr-cli-upd-{}", std::process::id()));
+        let code = update_all(
+            &c,
+            &|| vec![Box::new(UserFake) as Box<dyn PackageManager>],
+            &Settings::default(),
+            &d,
+            &mut o,
+            &mut e,
+        );
+        assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&e));
+        assert!(std::path::Path::new("/tmp/sweepr-update-all-marker").exists());
+        let s = String::from_utf8(o).unwrap();
+        assert!(s.contains("fd") && s.contains("updated"), "{s}");
     }
 
     #[cfg(unix)]
