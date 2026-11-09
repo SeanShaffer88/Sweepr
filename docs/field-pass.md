@@ -1,1 +1,55 @@
-IyBGaWVsZCBwYXNzIOKAlCBTd2VlcHIgdjAuMS4wIChydW4gb24gYSByZWFsIFdpbmRvd3MgbWFjaGluZSkKCkV2ZXJ5dGhpbmcgYmVsb3cgaXMgKipVbnZlcmlmaWVkKiogdW50aWwgaXQgaGFzIGJlZW4gcnVuIGhlcmUuIFdvcmsgdG9wIHRvCmJvdHRvbTsgbm90ZSBwYXNzIC8gZmFpbCAvIG5vdC1ydW4gcGVyIG51bWJlcmVkIHN0ZXAuCgojIyAxLiBDYXB0dXJlIHRoZSBtaXNzaW5nIHJlYWwgZml4dHVyZXMgKH4xMCBtaW51dGVzKQoKMS4gSW5zdGFsbCBTY29vcCBpZiBpdCBpcyBtaXNzaW5nIChodHRwczovL3Njb29wLnNoKSwgdGhlbiBpbnN0YWxsIG9uZSBzbWFsbAogICBhcHAgd2l0aCBpdCwgZS5nLiBgc2Nvb3AgaW5zdGFsbCBnaXRgLgoyLiBNYWtlIG9uZSBDaG9jb2xhdGV5IHBhY2thZ2Ugb3V0ZGF0ZWQ6IGluc3RhbGwgYW4gb2xkZXIgdmVyc2lvbiBvZgogICBzb21ldGhpbmcgc21hbGwsIGUuZy4gYGNob2NvIGluc3RhbGwgN3ppcCAtLXZlcnNpb24gMjQuOSAteWAsIHRoZW4gd2FpdAogICBmb3IgYSBuZXdlciA3LVppcCB0byBleGlzdCAob3IgcGljayBhbnkgcGFja2FnZSB3aXRoIGEgcGVuZGluZyB1cGRhdGUpLgozLiBGcm9tIHRoZSByZXBvIGZvbGRlciwgcnVuOgogICBgcG93ZXJzaGVsbCAtRXhlY3V0aW9uUG9saWN5IEJ5cGFzcyAtRmlsZSAuXHRvb2xzXGNhcHR1cmUtZml4dHVyZXMucHMxYAo0LiBDb25maXJtIGBjYXB0dXJlZFxgIG5vdyBob2xkcyBub24tZW1wdHkgYGNob2NvX291dGRhdGVkYCBvdXRwdXQgKGF0IGxlYXN0CiAgIG9uZSBkYXRhIHJvdykgYW5kIGEgcmVhbCBgc2Nvb3Agc3RhdHVzYCB0YWJsZSwgdGhlbiBoYW5kIHRoZSBgY2FwdHVyZWRgCiAgIGZvbGRlciBiYWNrIHNvIHRoZSBmaXh0dXJlcyBjYW4gYmUgY29tbWl0dGVkIGFzIGAqLnJlYWwudHh0YC4KCiMjIDIuIFNtb2tlIHRlc3Qg4oCUIHBvcnRhYmxlIGJ1aWxkCgpVc2UgYFN3ZWVwci12MC4xLjAteDY0LVBvcnRhYmxlLnppcGAgdW5wYWNrZWQgYW55d2hlcmUuCgo1LiBMYXVuY2ggYHN3ZWVwci5leGVgLiBXaW5kb3cgb3BlbnMsIGZpcnN0IGNoZWNrIHJ1bnMsIG91dGRhdGVkIHBhY2thZ2VzCiAgIGZyb20gZXZlcnkgaW5zdGFsbGVkIG1hbmFnZXIgYXBwZWFyIGluIG9uZSBsaXN0Lgo2LiBVcGRhdGUgb25lIHVzZXItc2NvcGUgcGFja2FnZSAoU2Nvb3ApLiBJdCBjb21wbGV0ZXM7IG5vIFVBQyBwcm9tcHQuCjcuIFNlbGVjdCBhIG1peGVkIGJhdGNoIChvbmUgU2Nvb3AgKyBvbmUgQ2hvY29sYXRleSBwYWNrYWdlKSBhbmQgdXBkYXRlLgogICAqKkV4YWN0bHkgb25lKiogVUFDIHByb21wdCBhcHBlYXJzOyBib3RoIGNvbXBsZXRlLgo4LiBTdGFydCBhIGNoZWNrIGFuZCBwcmVzcyBFc2MgbWlkLXJ1bjogaXQgY2FuY2VscyBwcm9tcHRseS4KOS4gU3dpdGNoIFdpbmRvd3MgYmV0d2VlbiBsaWdodCBhbmQgZGFyazogU3dlZXByIGZvbGxvd3MgKHRoZW1lID0gU3lzdGVtKS4KMTAuIE1vdmUgdGhlIFBDIHRvIGEgZGlmZmVyZW50LURQSSBkaXNwbGF5IChvciBjaGFuZ2Ugc2NhbGluZyAxMDAlIOKGkiAxNTAlKToKICAgIGxheW91dCBzdGF5cyBjb3JyZWN0LCBub3RoaW5nIG92ZXJsYXBzLgoxMS4gQ2xvc2UgYW5kIHJlbGF1bmNoOiB3aW5kb3cgc2l6ZS9wb3NpdGlvbiBhcmUgd2hlcmUgeW91IGxlZnQgdGhlbS4KMTIuIENoZWNrIHRoZSB0aXRsZS1iYXIgYW5kIHRhc2tiYXIgaWNvbjogdGhlIGNyaW1zb24gYnJvb20gaWNvbiBzaG93cy4KCiMjIDMuIENMSQoKMTMuIGBzd2VlcHIuZXhlIC0taGVhZGxlc3NgIGxpc3RzIHRoZSBzYW1lIG91dGRhdGVkIHNldCBhcyB0aGUgd2luZG93LgoxNC4gYHN3ZWVwci5leGUgLS1oZWFkbGVzcyAtLWpzb25gIHByaW50cyB2YWxpZCBKU09OLgoxNS4gYHN3ZWVwci5leGUgLS1jbGVhbmAgcmVtb3ZlcyB0aGUgYGRhdGFgIGZvbGRlciBjb250ZW50cyBuZXh0IHRvIHRoZSBleGUKICAgIGFuZCByZXBvcnRzIHdoYXQgaXQgcmVtb3ZlZDsgcmVsYXVuY2ggc2hvd3MgZGVmYXVsdCBzZXR0aW5ncy4KMTYuIGBzd2VlcHIuZXhlIC0tdW5pbnN0YWxsYCByZW1vdmVzIHRoZSBgZGF0YWAgZm9sZGVyIGl0c2VsZi4KCiMjIDQuIEluc3RhbGxlcgoKMTcuIFJ1biBgU3dlZXByLXYwLjEuMC14NjQtU2V0dXAuZXhlYDogaW5zdGFsbHMgcGVyLXVzZXIgd2l0aCBubyBhZG1pbgogICAgcHJvbXB0LCBTdGFydCBtZW51IGVudHJ5IGFwcGVhcnMsIGFwcCBsYXVuY2hlcyBmcm9tIGl0LgoxOC4gVW5pbnN0YWxsIGZyb20gU2V0dGluZ3MgPiBBcHBzOiBwcm9ncmFtIGZpbGVzIGFyZSBnb25lOyBzZXR0aW5ncyBpbgogICAgYCVMT0NBTEFQUERBVEElXFN3ZWVwcmAgcmVtYWluIChieSBkZXNpZ24g4oCUIGAtLXVuaW5zdGFsbGAgcmVtb3ZlcyB0aGVtKS4KCiMjIDUuIFNjcmVlbnNob3RzIG93ZWQgKFJFQURNRSBsaXN0KQoKMTkuIENhcHR1cmUgdGhlIHNpeCBzaG90cyBsaXN0ZWQgaW4gYFJFQURNRS5tZGAgPiAiU2NyZWVuc2hvdHMgdG8gY2FwdHVyZSIuCgpBbnkgZmFpbHVyZTogc2F2ZSB0aGUgbG9nIGRyYXdlciBjb250ZW50cyAoQ29weSAvIFNhdmUgaW4gdGhlIGFwcCkgd2l0aCB0aGUKc3RlcCBudW1iZXIgYW5kIHNlbmQgYm90aCBiYWNrLgo=
+# Field pass — Sweepr v0.1.0 (run on a real Windows machine)
+
+Everything below is **Unverified** until it has been run here. Work top to
+bottom; note pass / fail / not-run per numbered step.
+
+## 1. Capture the missing real fixtures (~10 minutes)
+
+1. Install Scoop if it is missing (https://scoop.sh), then install one small
+   app with it, e.g. `scoop install git`.
+2. Make one Chocolatey package outdated: install an older version of
+   something small, e.g. `choco install 7zip --version 24.9 -y`, then wait
+   for a newer 7-Zip to exist (or pick any package with a pending update).
+3. From the repo folder, run:
+   `powershell -ExecutionPolicy Bypass -File .\tools\capture-fixtures.ps1`
+4. Confirm `captured\` now holds non-empty `choco_outdated` output (at least
+   one data row) and a real `scoop status` table, then hand the `captured`
+   folder back so the fixtures can be committed as `*.real.txt`.
+
+## 2. Smoke test — portable build
+
+Use `Sweepr-v0.1.0-x64-Portable.zip` unpacked anywhere.
+
+5. Launch `sweepr.exe`. Window opens, first check runs, outdated packages
+   from every installed manager appear in one list.
+6. Update one user-scope package (Scoop). It completes; no UAC prompt.
+7. Select a mixed batch (one Scoop + one Chocolatey package) and update.
+   **Exactly one** UAC prompt appears; both complete.
+8. Start a check and press Esc mid-run: it cancels promptly.
+9. Switch Windows between light and dark: Sweepr follows (theme = System).
+10. Move the PC to a different-DPI display (or change scaling 100% → 150%):
+    layout stays correct, nothing overlaps.
+11. Close and relaunch: window size/position are where you left them.
+12. Check the title-bar and taskbar icon: the crimson broom icon shows.
+
+## 3. CLI
+
+13. `sweepr.exe --headless` lists the same outdated set as the window.
+14. `sweepr.exe --headless --json` prints valid JSON.
+15. `sweepr.exe --clean` removes the `data` folder contents next to the exe
+    and reports what it removed; relaunch shows default settings.
+16. `sweepr.exe --uninstall` removes the `data` folder itself.
+
+## 4. Installer
+
+17. Run `Sweepr-v0.1.0-x64-Setup.exe`: installs per-user with no admin
+    prompt, Start menu entry appears, app launches from it.
+18. Uninstall from Settings > Apps: program files are gone; settings in
+    `%LOCALAPPDATA%\Sweepr` remain (by design — `--uninstall` removes them).
+
+## 5. Screenshots owed (README list)
+
+19. Capture the six shots listed in `README.md` > "Screenshots to capture".
+
+Any failure: save the log drawer contents (Copy / Save in the app) with the
+step number and send both back.
