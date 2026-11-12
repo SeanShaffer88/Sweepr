@@ -31,6 +31,12 @@ Sweepr is a small native Windows updater over **WinGet**, **Chocolatey** and **S
 | Ctrl+, | Settings |
 | Ctrl+I | Show / hide ignored |
 | Ctrl+K | Command palette |
+| Ctrl+F | Find (focus the filter) |
+| Ctrl+A | Select all packages (all text inside a text box) |
+| Ctrl+S | Save log |
+| Ctrl+D | Show / hide the details panel |
+| F6 | Move to the next region |
+| F1 | Keyboard help |
 | Space / Enter | Check or uncheck the row |
 | Esc | Cancel running check or update |
 

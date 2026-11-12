@@ -32,6 +32,17 @@ Use `Sweepr-v0.1.0-x64-Portable.zip` unpacked anywhere.
 11. Close and relaunch: window size/position are where you left them.
 12. Check the title-bar and taskbar icon: the crimson broom icon shows.
 
+12b. TesselGUI r2 look (new, never run): GitHub dark and light both read
+    cleanly; list has edge-colour row and column gridlines, a 3 px bar on
+    the highlighted row, and an own-drawn checkbox that toggles on click and
+    on Space; Update selected is green and brightens on hover; panel
+    headers show a 2 px blue rule on the focused region; F6 cycles regions;
+    Ctrl+D hides and shows Details and the choice survives a relaunch;
+    hint bar items are clickable; progress shows ten segments during a check;
+    Ctrl+K shows recent commands first and says why a command is unavailable;
+    tooltips wait about half a second; Reset layout restores the first-run
+    window; turn on Windows high contrast and the main window follows it.
+
 ## 3. CLI
 
 13. `sweepr.exe --headless` lists the same outdated set as the window.

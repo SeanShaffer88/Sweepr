@@ -33,9 +33,9 @@ pub fn restore(saved: WindowState, dpi: u32, monitors: &[Rect]) -> WindowState {
     clamp_window(dev, monitors)
 }
 
-/// First-run window: 1000x640 logical, centered, never larger than 90% of the first monitor.
+/// First-run window: 1120x640 logical, centered, never larger than 90% of the first monitor.
 pub fn default_window(dpi: u32, monitors: &[Rect]) -> WindowState {
-    let (mut w, mut h) = (to_device(1000, dpi), to_device(640, dpi));
+    let (mut w, mut h) = (to_device(1120, dpi), to_device(640, dpi));
     let (mut x, mut y) = (100, 100);
     if let Some(m) = monitors.first() {
         w = w.min(m.w * 9 / 10);

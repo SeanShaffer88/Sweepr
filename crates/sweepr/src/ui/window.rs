@@ -1,11 +1,20 @@
 //! Main window: pure Win32 + Common Controls v6. Windows only.
 //! Runtime behavior is Unverified until run on a real machine (see AUDIT.md).
 
-use super::actions::{build_jobs, empty_state, redact, uac_prompts_needed, Cmd};
+use super::actions::{
+    build_jobs, disabled_reason, empty_state, redact, uac_prompts_needed, Cmd, COMMANDS,
+};
 use super::dialogs::{palette_dialog, settings_dialog};
 use super::geometry::{default_window, restore, to_device, to_saved};
-use super::model::{status_line, Col, ListModel, MgrState, Sort};
-use super::theme::{colorref, palette, Palette, DENSE_PX, ROW_HEIGHT_PX};
+use super::model::{Col, ListModel, MgrState, Sort};
+use super::present::{
+    details_text, failure_text, hints, inspector_width, next_region, progress_text, segments,
+    summary, Region,
+};
+use super::theme::{
+    colorref, palette, Palette, Severity, ACTIVE_RULE_PX, CONTROL_PX, DENSE_PX, GAP_PX, LABEL_PX,
+    PANEL_HEADER_PX, ROW_HEIGHT_PX, SELECT_BAR_PX,
+};
 use super::tips::{column_tooltip, tooltip, Ctl};
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -28,14 +37,17 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 use windows_sys::Win32::System::Threading::CreateMutexW;
+use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows_sys::Win32::UI::Controls::Dialogs::{
     GetSaveFileNameW, OFN_OVERWRITEPROMPT, OPENFILENAMEW,
 };
 use windows_sys::Win32::UI::Controls::*;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    EnableWindow, SetFocus, VK_F5, VK_RETURN, VK_SPACE,
+    EnableWindow, GetFocus, GetKeyState, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    VK_CONTROL, VK_F1, VK_F5, VK_F6, VK_RETURN, VK_SPACE,
 };
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const WM_APP_EVENT: u32 = WM_APP + 1;
@@ -43,8 +55,8 @@ const CLASS: &str = "SweeprMainWindow";
 const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
 const SS_LEFTNOWORDWRAP: u32 = 0x0000_000C;
 const SS_CENTERIMAGE: u32 = 0x0000_0200;
-const SS_CENTER: u32 = 0x0000_0001;
 const CF_UNICODETEXT: u32 = 13;
+const SS_OWNERDRAW_STYLE: u32 = 0x0000_000D;
 
 const ID_LIST: isize = 101;
 const ID_STATUS: isize = 102;
@@ -64,6 +76,8 @@ const ID_LOG_TOGGLE: isize = 121;
 const ID_LOG_COPY: isize = 122;
 const ID_LOG_SAVE: isize = 123;
 const ID_BTN_CANCEL: isize = 124;
+const ID_DETAILS: isize = 125;
+const ID_BTN_DETAILS: isize = 126;
 const IDCANCEL_ID: isize = 2;
 
 const MANAGERS: [Manager; 3] = [Manager::Winget, Manager::Choco, Manager::Scoop];
@@ -76,9 +90,14 @@ const COLS: [(Col, &str, i32); 6] = [
     (Col::Scope, "Scope", 80),
 ];
 const LOG_CAP: usize = 20_000;
-const TOOLBAR_H: i32 = 36;
-const STATUS_H: i32 = 28;
-const LOG_H: i32 = 160;
+const HINT_H: i32 = 28;
+const STATUS_H: i32 = 40;
+/// Log panel: header, a strip for the Copy/Save buttons, and the text area.
+const LOG_STRIP_H: i32 = 40;
+const LOG_H: i32 = PANEL_HEADER_PX + LOG_STRIP_H + 120;
+const CHECK_PX: i32 = 14;
+const CHECK_ZONE_PX: i32 = 28;
+const RECENT_MAX: usize = 8;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -99,6 +118,8 @@ struct App {
     header: HWND,
     status: HWND,
     empty: HWND,
+    details: HWND,
+    btn_details: HWND,
     filter: HWND,
     log_edit: HWND,
     btn_cancel: HWND,
@@ -117,8 +138,23 @@ struct App {
     dark: bool,
     dpi: u32,
     font: HFONT,
-    bg0: HBRUSH,
-    bg1: HBRUSH,
+    font_label: HFONT,
+    bg: HBRUSH,
+    sf: HBRUSH,
+    hc: bool,
+    hover: bool,
+    region: Region,
+    hint_rects: Vec<(RECT, Cmd)>,
+    rc_list_hdr: RECT,
+    rc_det_hdr: RECT,
+    rc_log_hdr: RECT,
+    rc_hint: RECT,
+    rc_prog: RECT,
+    recent: Vec<Cmd>,
+    sev: Severity,
+    prog_done: usize,
+    prog_total: usize,
+    details_shown: String,
     cancel: CancelToken,
     update_cancel: CancelToken,
     checking: bool,
@@ -128,6 +164,13 @@ struct App {
     log: Vec<String>,
     scratch: Vec<u16>,
 }
+
+const ZERO_RECT: RECT = RECT {
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+};
 
 unsafe fn app_of(hwnd: HWND) -> Option<&'static mut App> {
     (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App).as_mut()
@@ -185,6 +228,12 @@ fn monitors() -> Vec<Rect> {
     v
 }
 
+const ID_ACC_FIND: isize = 130;
+const ID_ACC_SELALL: isize = 131;
+const ID_ACC_HELP: isize = 132;
+const ID_ACC_REGION: isize = 133;
+const WM_MOUSELEAVE_MSG: u32 = 0x02A3;
+
 fn accelerators() -> Vec<ACCEL> {
     const V: u8 = 1; // FVIRTKEY
     const SH: u8 = 4;
@@ -196,13 +245,72 @@ fn accelerators() -> Vec<ACCEL> {
     };
     vec![
         k(V, VK_F5, ID_BTN_CHECK),
+        k(V, VK_F1, ID_ACC_HELP),
+        k(V, VK_F6, ID_ACC_REGION),
         k(V | CT, b'U' as u16, ID_BTN_UPDATE),
         k(V | CT | SH, b'U' as u16, ID_BTN_UPDATEALL),
         k(V | CT, b'L' as u16, ID_LOG_TOGGLE),
+        k(V | CT, b'D' as u16, ID_BTN_DETAILS),
+        k(V | CT, b'F' as u16, ID_ACC_FIND),
+        k(V | CT, b'A' as u16, ID_ACC_SELALL),
+        k(V | CT, b'S' as u16, ID_LOG_SAVE),
         k(V | CT, 0xBC, ID_BTN_SETTINGS), // VK_OEM_COMMA
         k(V | CT, b'I' as u16, ID_SHOW_IGN),
         k(V | CT, b'K' as u16, ID_BTN_PALETTE),
     ]
+}
+
+fn high_contrast() -> bool {
+    unsafe {
+        let mut hc: HIGHCONTRASTW = std::mem::zeroed();
+        hc.cbSize = std::mem::size_of::<HIGHCONTRASTW>() as u32;
+        SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            hc.cbSize,
+            &mut hc as *mut _ as *mut _,
+            0,
+        );
+        hc.dwFlags & HCF_HIGHCONTRASTON != 0
+    }
+}
+
+fn sys_rgb(i: SYS_COLOR_INDEX) -> u32 {
+    let c = unsafe { GetSysColor(i) };
+    ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF)
+}
+
+/// The active palette: TesselGUI GitHub tokens, or system colors in Windows high contrast.
+fn pal(app: &App) -> Palette {
+    if !app.hc {
+        return palette(app.dark);
+    }
+    let (win, text, face) = (
+        sys_rgb(COLOR_WINDOW),
+        sys_rgb(COLOR_WINDOWTEXT),
+        sys_rgb(COLOR_BTNFACE),
+    );
+    let (hi, hit) = (sys_rgb(COLOR_HIGHLIGHT), sys_rgb(COLOR_HIGHLIGHTTEXT));
+    Palette {
+        background: win,
+        surface: win,
+        raised: face,
+        selected: hi,
+        fg: text,
+        muted: text,
+        edge: text,
+        border: text,
+        grid: win,
+        action: hi,
+        action_hover: hi,
+        action_pressed: hi,
+        action_fg: hit,
+        selection: hi,
+        focus: text,
+        info: text,
+        warning: text,
+        success: text,
+        danger: text,
+    }
 }
 
 /// Creates the window and runs the message loop. Returns the process exit code.
@@ -262,6 +370,8 @@ pub fn run_gui(settings: Settings, notice: Option<SwpError>, data_dir: PathBuf) 
             header: std::ptr::null_mut(),
             status: std::ptr::null_mut(),
             empty: std::ptr::null_mut(),
+            details: std::ptr::null_mut(),
+            btn_details: std::ptr::null_mut(),
             filter: std::ptr::null_mut(),
             log_edit: std::ptr::null_mut(),
             btn_cancel: std::ptr::null_mut(),
@@ -280,8 +390,23 @@ pub fn run_gui(settings: Settings, notice: Option<SwpError>, data_dir: PathBuf) 
             dark,
             dpi,
             font: std::ptr::null_mut(),
-            bg0: std::ptr::null_mut(),
-            bg1: std::ptr::null_mut(),
+            font_label: std::ptr::null_mut(),
+            bg: std::ptr::null_mut(),
+            sf: std::ptr::null_mut(),
+            hc: high_contrast(),
+            hover: false,
+            region: Region::List,
+            hint_rects: Vec::new(),
+            rc_list_hdr: ZERO_RECT,
+            rc_det_hdr: ZERO_RECT,
+            rc_log_hdr: ZERO_RECT,
+            rc_hint: ZERO_RECT,
+            rc_prog: ZERO_RECT,
+            recent: Vec::new(),
+            sev: Severity::Info,
+            prog_done: 0,
+            prog_total: 0,
+            details_shown: String::new(),
             cancel: CancelToken::new(),
             update_cancel: CancelToken::new(),
             checking: false,
@@ -324,6 +449,19 @@ pub fn run_gui(settings: Settings, notice: Option<SwpError>, data_dir: PathBuf) 
         let table = CreateAcceleratorTableW(acc.as_ptr(), acc.len() as i32);
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+            if msg.message == WM_KEYDOWN
+                && msg.wParam == b'A' as usize
+                && GetKeyState(VK_CONTROL as i32) < 0
+            {
+                // Ctrl+A selects text inside an edit; elsewhere it selects all packages.
+                let f = GetFocus();
+                let mut cls = [0u16; 8];
+                let n = GetClassNameW(f, cls.as_mut_ptr(), 8) as usize;
+                if String::from_utf16_lossy(&cls[..n]).eq_ignore_ascii_case("edit") {
+                    SendMessageW(f, EM_SETSEL, 0, -1);
+                    continue;
+                }
+            }
             if TranslateAcceleratorW(hwnd, table, &msg) != 0 {
                 continue;
             }
@@ -337,17 +475,13 @@ pub fn run_gui(settings: Settings, notice: Option<SwpError>, data_dir: PathBuf) 
     }
 }
 
-unsafe fn rebuild_font(app: &mut App) {
-    if !app.font.is_null() {
-        DeleteObject(app.font);
-    }
-    let h = -((DENSE_PX * app.dpi as i32 + 48) / 96);
-    app.font = CreateFontW(
-        h,
+unsafe fn make_font(dpi: u32, px: i32, weight: i32) -> HFONT {
+    CreateFontW(
+        -((px * dpi as i32 + 48) / 96),
         0,
         0,
         0,
-        FW_NORMAL as i32,
+        weight,
         0,
         0,
         0,
@@ -357,7 +491,18 @@ unsafe fn rebuild_font(app: &mut App) {
         CLEARTYPE_QUALITY as u32,
         (DEFAULT_PITCH | FF_DONTCARE) as u32,
         wide("Segoe UI").as_ptr(),
-    );
+    )
+}
+
+unsafe fn rebuild_font(app: &mut App) {
+    for f in [app.font, app.font_label] {
+        if !f.is_null() {
+            DeleteObject(f);
+        }
+    }
+    // TesselGUI Compact: dense 12 px for controls and rows, label 13 px for panel headers.
+    app.font = make_font(app.dpi, DENSE_PX, FW_NORMAL as i32);
+    app.font_label = make_font(app.dpi, LABEL_PX, FW_SEMIBOLD as i32);
     for w in app.ctrls.iter().copied().chain([app.header]) {
         SendMessageW(w, WM_SETFONT, app.font as WPARAM, 1);
     }
@@ -375,14 +520,15 @@ unsafe fn set_row_height(app: &mut App) {
 }
 
 unsafe fn apply_theme(app: &mut App) {
-    let p: Palette = palette(app.dark);
-    for b in [app.bg0, app.bg1] {
+    app.hc = high_contrast();
+    let p: Palette = pal(app);
+    for b in [app.bg, app.sf] {
         if !b.is_null() {
             DeleteObject(b);
         }
     }
-    app.bg0 = CreateSolidBrush(colorref(p.bg0));
-    app.bg1 = CreateSolidBrush(colorref(p.bg1));
+    app.bg = CreateSolidBrush(colorref(p.background));
+    app.sf = CreateSolidBrush(colorref(p.surface));
     let on: BOOL = app.dark as BOOL;
     DwmSetWindowAttribute(
         app.hwnd,
@@ -390,17 +536,29 @@ unsafe fn apply_theme(app: &mut App) {
         &on as *const _ as *const _,
         4,
     );
-    let theme = if app.dark {
+    let theme = if app.hc {
+        // Leave visual styles on the system's high-contrast scheme.
+        ""
+    } else if app.dark {
         "DarkMode_Explorer"
     } else {
         "Explorer"
     };
     for w in app.ctrls.iter().copied().chain([app.header]) {
-        SetWindowTheme(w, wide(theme).as_ptr(), std::ptr::null());
+        if app.hc {
+            SetWindowTheme(w, std::ptr::null(), std::ptr::null());
+        } else {
+            SetWindowTheme(w, wide(theme).as_ptr(), std::ptr::null());
+        }
     }
-    SendMessageW(app.list, LVM_SETBKCOLOR, 0, colorref(p.bg1) as LPARAM);
-    SendMessageW(app.list, LVM_SETTEXTBKCOLOR, 0, colorref(p.bg1) as LPARAM);
-    SendMessageW(app.list, LVM_SETTEXTCOLOR, 0, colorref(p.text) as LPARAM);
+    SendMessageW(app.list, LVM_SETBKCOLOR, 0, colorref(p.surface) as LPARAM);
+    SendMessageW(
+        app.list,
+        LVM_SETTEXTBKCOLOR,
+        0,
+        colorref(p.surface) as LPARAM,
+    );
+    SendMessageW(app.list, LVM_SETTEXTCOLOR, 0, colorref(p.fg) as LPARAM);
     InvalidateRect(app.hwnd, std::ptr::null(), 1);
 }
 
@@ -479,7 +637,7 @@ unsafe fn create_controls(app: &mut App) {
         0,
         ID_BTN_UPDATE,
     );
-    let b_check = mk(app, "BUTTON", "Check  F5", btn, 0, ID_BTN_CHECK);
+    let b_check = mk(app, "BUTTON", "Check", btn, 0, ID_BTN_CHECK);
     let b_all = mk(app, "BUTTON", "Update all", btn, 0, ID_BTN_UPDATEALL);
     app.filter = mk(
         app,
@@ -510,7 +668,9 @@ unsafe fn create_controls(app: &mut App) {
     }
     app.show_ign = mk(app, "BUTTON", "Show ignored", ck, 0, ID_SHOW_IGN);
     let b_set = mk(app, "BUTTON", "Settings", btn, 0, ID_BTN_SETTINGS);
-    let b_pal = mk(app, "BUTTON", "Commands  Ctrl+K", btn, 0, ID_BTN_PALETTE);
+    let b_pal = mk(app, "BUTTON", "Commands", btn, 0, ID_BTN_PALETTE);
+    app.btn_details = mk(app, "BUTTON", "Details", btn, 0, ID_BTN_DETAILS);
+    let b_det = app.btn_details;
     app.list = mk(
         app,
         "SysListView32",
@@ -519,17 +679,20 @@ unsafe fn create_controls(app: &mut App) {
         0,
         ID_LIST,
     );
-    app.empty = mk(app, "STATIC", "", SS_CENTER, 0, ID_EMPTY);
+    app.empty = mk(app, "STATIC", "", SS_OWNERDRAW_STYLE, 0, ID_EMPTY);
+    app.details = mk(
+        app,
+        "EDIT",
+        "",
+        ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOVSCROLL as u32 | WS_VSCROLL | WS_TABSTOP,
+        0,
+        ID_DETAILS,
+    );
     app.log_edit = mk(
         app,
         "EDIT",
         "",
-        ES_MULTILINE as u32
-            | ES_READONLY as u32
-            | ES_AUTOVSCROLL as u32
-            | WS_VSCROLL
-            | WS_BORDER
-            | WS_TABSTOP,
+        ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOVSCROLL as u32 | WS_VSCROLL | WS_TABSTOP,
         0,
         ID_LOG,
     );
@@ -552,11 +715,8 @@ unsafe fn create_controls(app: &mut App) {
         app.list,
         LVM_SETEXTENDEDLISTVIEWSTYLE,
         0,
-        (LVS_EX_FULLROWSELECT
-            | LVS_EX_GRIDLINES
-            | LVS_EX_CHECKBOXES
-            | LVS_EX_DOUBLEBUFFER
-            | LVS_EX_LABELTIP) as LPARAM,
+        // Rows, gridlines and the checkbox are drawn by `draw_row` (TesselGUI edge-colour grid).
+        (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP) as LPARAM,
     );
     app.header = SendMessageW(app.list, LVM_GETHEADER, 0, 0) as HWND;
     insert_columns(app);
@@ -576,6 +736,8 @@ unsafe fn create_controls(app: &mut App) {
         std::ptr::null(),
     );
     SendMessageW(app.tip, TTM_SETMAXTIPWIDTH, 0, 420);
+    // TesselGUI: tooltips appear after 500 ms.
+    SendMessageW(app.tip, TTM_SETDELAYTIME, TTDT_INITIAL as WPARAM, 500);
     let tips = [
         (b_check, Ctl::Check),
         (app.btn_update, Ctl::UpdateSelected),
@@ -587,6 +749,7 @@ unsafe fn create_controls(app: &mut App) {
         (app.show_ign, Ctl::ShowIgnored),
         (b_set, Ctl::Settings),
         (b_pal, Ctl::Palette),
+        (b_det, Ctl::DetailsToggle),
         (app.list, Ctl::List),
         (b_log, Ctl::LogToggle),
         (b_copy, Ctl::LogCopy),
@@ -605,6 +768,12 @@ unsafe fn create_controls(app: &mut App) {
     ti.lpszText = usize::MAX as *mut u16; // LPSTR_TEXTCALLBACKW
     SendMessageW(app.tip, TTM_ADDTOOLW, 0, &ti as *const _ as LPARAM);
 
+    SetWindowSubclass(
+        app.btn_update,
+        Some(primary_proc),
+        1,
+        app as *mut App as usize,
+    );
     rebuild_font(app);
     set_row_height(app);
     apply_theme(app);
@@ -612,98 +781,174 @@ unsafe fn create_controls(app: &mut App) {
     for h in [app.log_edit, b_copy, b_save] {
         ShowWindow(h, SW_HIDE);
     }
+    SendMessageW(app.btn_details, BM_SETCHECK, 0, 0);
     layout(app);
+    update_details(app);
 }
 
-/// Left-to-right toolbar packing at the current DPI.
-unsafe fn layout(app: &App) {
+/// Primary-button subclass: tracks hover so the owner-draw button can show `action_hover`.
+unsafe extern "system" fn primary_proc(
+    h: HWND,
+    msg: u32,
+    w: WPARAM,
+    l: LPARAM,
+    _id: usize,
+    data: usize,
+) -> LRESULT {
+    let app = &mut *(data as *mut App);
+    match msg {
+        WM_MOUSEMOVE if !app.hover => {
+            app.hover = true;
+            let mut t = TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: h,
+                dwHoverTime: 0,
+            };
+            TrackMouseEvent(&mut t);
+            InvalidateRect(h, std::ptr::null(), 0);
+        }
+        WM_MOUSELEAVE_MSG => {
+            app.hover = false;
+            InvalidateRect(h, std::ptr::null(), 0);
+        }
+        _ => {}
+    }
+    DefSubclassProc(h, msg, w, l)
+}
+
+/// Panel layout at the current DPI (TesselGUI Compact: 32 px controls, 8 px gaps,
+/// 28 px panel headers). Top to bottom: toolbar, list | details, log drawer, hint bar, status.
+unsafe fn layout(app: &mut App) {
     let mut r: RECT = std::mem::zeroed();
     GetClientRect(app.hwnd, &mut r);
     let (w, h) = (r.right - r.left, r.bottom - r.top);
-    let d = |v: i32| to_device(v, app.dpi);
-    let by = d(5);
-    let bh = d(26);
-    let place = |id: isize, x: i32, wd: i32| {
-        let c = GetDlgItem(app.hwnd, id as i32);
-        MoveWindow(c, x, by, wd, bh, 1);
+    let dpi = app.dpi;
+    let d = |v: i32| to_device(v, dpi);
+    let (gap, ch) = (d(GAP_PX), d(CONTROL_PX));
+    let hwnd = app.hwnd;
+    let place = |id: isize, x: i32, y: i32, wd: i32| {
+        MoveWindow(GetDlgItem(hwnd, id as i32), x, y, wd, ch, 1);
     };
-    let mut x = d(8);
+    let mut x = gap;
     for (id, wd) in [
-        (ID_BTN_CHECK, 84),
-        (ID_BTN_UPDATE, 130),
-        (ID_BTN_UPDATEALL, 96),
+        (ID_BTN_CHECK, 72),
+        (ID_BTN_UPDATE, 128),
+        (ID_BTN_UPDATEALL, 100),
     ] {
-        place(id, x, d(wd));
-        x += d(wd) + d(6);
+        place(id, x, gap, d(wd));
+        x += d(wd) + gap;
     }
-    let mut rx = w - d(8);
+    let mut rx = w - gap;
     for (id, wd) in [
-        (ID_BTN_PALETTE, 130),
-        (ID_BTN_SETTINGS, 74),
-        (ID_SHOW_IGN, 104),
-        (ID_SRC_SCOOP, 64),
-        (ID_SRC_CHOCO, 68),
-        (ID_SRC_WINGET, 72),
+        (ID_BTN_PALETTE, 96),
+        (ID_BTN_SETTINGS, 80),
+        (ID_BTN_DETAILS, 80),
+        (ID_SHOW_IGN, 112),
+        (ID_SRC_SCOOP, 68),
+        (ID_SRC_CHOCO, 72),
+        (ID_SRC_WINGET, 76),
     ] {
         rx -= d(wd);
-        place(id, rx, d(wd));
-        rx -= d(4);
+        place(id, rx, gap, d(wd));
+        rx -= gap;
     }
-    place(ID_FILTER, x + d(6), (rx - x - d(12)).max(d(80)));
+    place(ID_FILTER, x, gap, (rx - x).max(d(80)));
 
-    let status_h = d(STATUS_H);
+    let toolbar_h = ch + 2 * gap;
+    let (hint_h, status_h, ph) = (d(HINT_H), d(STATUS_H), d(PANEL_HEADER_PX));
     let log_h = if app.log_open { d(LOG_H) } else { 0 };
-    let list_top = d(TOOLBAR_H);
-    let list_h = (h - list_top - status_h - log_h).max(0);
-    MoveWindow(app.list, 0, list_top, w, list_h, 1);
-    MoveWindow(app.empty, w / 6, list_top + list_h / 3, w * 2 / 3, d(60), 1);
-    if app.log_open {
-        let top = list_top + list_h;
-        let bar = d(30);
+    let body_top = toolbar_h;
+    let body_h = (h - body_top - hint_h - status_h - log_h).max(0);
+    let det_w = if app.settings.details_open {
+        inspector_width(w, dpi)
+    } else {
+        0
+    };
+    let list_w = w - det_w;
+    let rc = |l: i32, t: i32, rr: i32, b: i32| RECT {
+        left: l,
+        top: t,
+        right: rr,
+        bottom: b,
+    };
+    app.rc_list_hdr = rc(0, body_top, list_w, body_top + ph);
+    MoveWindow(app.list, 0, body_top + ph, list_w, (body_h - ph).max(0), 1);
+    let mut hr: RECT = std::mem::zeroed();
+    GetWindowRect(app.header, &mut hr);
+    let hh = hr.bottom - hr.top;
+    MoveWindow(
+        app.empty,
+        0,
+        body_top + ph + hh,
+        list_w,
+        (body_h - ph - hh).max(0),
+        1,
+    );
+    if det_w > 0 {
+        app.rc_det_hdr = rc(list_w, body_top, w, body_top + ph);
         MoveWindow(
-            GetDlgItem(app.hwnd, ID_LOG_COPY as i32),
-            d(8),
-            top + d(2),
-            d(90),
-            d(26),
+            app.details,
+            list_w,
+            body_top + ph,
+            det_w,
+            (body_h - ph).max(0),
             1,
         );
-        MoveWindow(
-            GetDlgItem(app.hwnd, ID_LOG_SAVE as i32),
-            d(104),
-            top + d(2),
-            d(90),
-            d(26),
-            1,
-        );
-        MoveWindow(app.log_edit, 0, top + bar, w, log_h - bar, 1);
+        ShowWindow(app.details, SW_SHOW);
+    } else {
+        app.rc_det_hdr = ZERO_RECT;
+        ShowWindow(app.details, SW_HIDE);
     }
+    if app.log_open {
+        let top = body_top + body_h;
+        app.rc_log_hdr = rc(0, top, w, top + ph);
+        let by = top + ph + (d(LOG_STRIP_H) - ch) / 2;
+        MoveWindow(GetDlgItem(hwnd, ID_LOG_COPY as i32), gap, by, d(96), ch, 1);
+        MoveWindow(
+            GetDlgItem(hwnd, ID_LOG_SAVE as i32),
+            gap * 2 + d(96),
+            by,
+            d(96),
+            ch,
+            1,
+        );
+        let ey = top + ph + d(LOG_STRIP_H);
+        MoveWindow(
+            app.log_edit,
+            0,
+            ey,
+            w,
+            (log_h - ph - d(LOG_STRIP_H)).max(0),
+            1,
+        );
+    } else {
+        app.rc_log_hdr = ZERO_RECT;
+    }
+    let hy = h - status_h - hint_h;
+    app.rc_hint = rc(0, hy, w, hy + hint_h);
     let sy = h - status_h;
-    let (cw, lw) = (d(104), d(104));
+    let by = sy + (status_h - ch) / 2;
+    let (cw, lw) = (d(112), d(104));
+    MoveWindow(app.btn_cancel, w - cw - gap, by, cw, ch, 1);
     MoveWindow(
-        app.btn_cancel,
-        w - cw - d(8),
-        sy + d(1),
-        cw,
-        status_h - d(2),
-        1,
-    );
-    MoveWindow(
-        GetDlgItem(app.hwnd, ID_LOG_TOGGLE as i32),
-        w - cw - lw - d(14),
-        sy + d(1),
+        GetDlgItem(hwnd, ID_LOG_TOGGLE as i32),
+        w - cw - lw - 2 * gap,
+        by,
         lw,
-        status_h - d(2),
+        ch,
         1,
     );
-    MoveWindow(
-        app.status,
-        d(8),
-        sy,
-        (w - cw - lw - d(28)).max(0),
-        status_h,
-        1,
+    let pw = d(120);
+    let px = w - cw - lw - 3 * gap - pw;
+    app.rc_prog = rc(
+        px,
+        sy + (status_h - d(10)) / 2,
+        px + pw,
+        sy + (status_h + d(10)) / 2,
     );
+    MoveWindow(app.status, gap, sy, (px - 2 * gap).max(0), status_h, 1);
+    InvalidateRect(hwnd, std::ptr::null(), 1);
 }
 
 unsafe fn set_log_open(app: &mut App, open: bool) {
@@ -739,21 +984,86 @@ fn elevated_now() -> bool {
     win::is_elevated()
 }
 
+/// Derives which region holds the keyboard focus, for the active rule and the hint bar.
+unsafe fn update_region(app: &mut App) {
+    let f = GetFocus();
+    let r = if f == app.list || f == app.header {
+        Region::List
+    } else if f == app.details {
+        Region::Details
+    } else if f == app.log_edit
+        || f == GetDlgItem(app.hwnd, ID_LOG_COPY as i32)
+        || f == GetDlgItem(app.hwnd, ID_LOG_SAVE as i32)
+    {
+        Region::Log
+    } else if f.is_null() {
+        app.region
+    } else {
+        Region::Toolbar
+    };
+    if r != app.region {
+        app.region = r;
+        InvalidateRect(app.hwnd, std::ptr::null(), 0);
+    }
+}
+
+unsafe fn selected_index(app: &App) -> i32 {
+    SendMessageW(
+        app.list,
+        LVM_GETNEXTITEM,
+        usize::MAX,
+        LVNI_SELECTED as LPARAM,
+    ) as i32
+}
+
+/// Fills the details panel from the highlighted row.
+unsafe fn update_details(app: &mut App) {
+    let i = selected_index(app);
+    let pkg = (i >= 0 && (i as usize) < app.model.visible_len())
+        .then(|| app.model.visible(i as usize).clone());
+    let text = details_text(pkg.as_ref());
+    if text != app.details_shown {
+        SetWindowTextW(app.details, wide(&text).as_ptr());
+        app.details_shown = text;
+    }
+}
+
+fn busy(app: &App) -> bool {
+    app.checking || app.updating
+}
+
 unsafe fn refresh_status(app: &mut App) {
     let sel = app.model.selected();
-    let mut t = status_line(&app.states, app.model.total(), sel.len());
+    let (sev, mut t) = summary(&app.states, app.model.total(), sel.len());
     let n = uac_prompts_needed(&sel, elevated_now());
     t.push_str(&format!(
         " | {n} UAC prompt{}",
         if n == 1 { "" } else { "s" }
     ));
+    if app.checking {
+        app.prog_total = app.states.len();
+        app.prog_done = app
+            .states
+            .iter()
+            .filter(|(_, s)| *s != MgrState::Checking)
+            .count();
+    }
+    if busy(app) && app.prog_total > 0 {
+        let unit = if app.updating { "packages" } else { "managers" };
+        t.push_str(&format!(
+            " | {}",
+            progress_text(app.prog_done, app.prog_total, unit)
+        ));
+    }
     if !app.running.is_empty() {
         t.push_str(" | ");
         t.push_str(&app.running);
     }
-    SetWindowTextW(app.status, wide(&t).as_ptr());
-    let busy = app.checking || app.updating;
-    EnableWindow(app.btn_cancel, busy as BOOL);
+    // Severity is never color alone: glyph and word come first.
+    app.sev = sev;
+    let line = format!("{} {}: {t}", sev.glyph(), sev.word());
+    SetWindowTextW(app.status, wide(&line).as_ptr());
+    EnableWindow(app.btn_cancel, busy(app) as BOOL);
     match empty_state(&app.states, app.model.total(), app.checking) {
         Some((title, hint)) => {
             SetWindowTextW(app.empty, wide(&format!("{title}\r\n{hint}")).as_ptr());
@@ -763,6 +1073,11 @@ unsafe fn refresh_status(app: &mut App) {
             ShowWindow(app.empty, SW_HIDE);
         }
     }
+    update_details(app);
+    update_region(app);
+    InvalidateRect(app.hwnd, &app.rc_prog, 1);
+    InvalidateRect(app.hwnd, &app.rc_list_hdr, 0);
+    InvalidateRect(app.hwnd, &app.rc_hint, 0);
 }
 
 fn set_state(app: &mut App, m: Manager, s: MgrState) {
@@ -828,7 +1143,9 @@ unsafe fn start_update(app: &mut App, sel: Vec<UpdatePackage>) {
     }
     app.updating = true;
     app.update_cancel = CancelToken::new();
-    app.running = format!("updating {} package(s)", sel.len());
+    app.running = String::new();
+    app.prog_done = 0;
+    app.prog_total = sel.len();
     append_log(
         app,
         format!(
@@ -895,7 +1212,7 @@ unsafe fn drain_events(app: &mut App) {
                         Status::Failed(SwpError::ManagerMissing(_)) => MgrState::Missing,
                         Status::Failed(e) => {
                             append_log(app, format!("[{}] {e}", mgr_name(m)));
-                            MgrState::Failed(format!("{} {}", e.code(), failure_word(&e)))
+                            MgrState::Failed(failure_text(&e))
                         }
                     };
                     set_state(app, m, s);
@@ -932,6 +1249,9 @@ unsafe fn drain_events(app: &mut App) {
                         ItemState::Done => "done",
                         ItemState::Failed => "FAILED",
                     };
+                    if state != ItemState::Started {
+                        app.prog_done += 1;
+                    }
                     app.running = format!("{id}: {s}");
                     append_log(
                         app,
@@ -950,20 +1270,14 @@ unsafe fn drain_events(app: &mut App) {
             UiMsg::UpdatesDone => {
                 app.updating = false;
                 app.running.clear();
+                app.prog_done = 0;
+                app.prog_total = 0;
                 append_log(app, "[sweepr] updates finished; checking again".into());
                 start_discovery(app);
             }
         }
     }
     refresh_status(app);
-}
-
-fn failure_word(e: &SwpError) -> &'static str {
-    match e {
-        SwpError::Timeout(_) => "timeout",
-        SwpError::ParseFailed { .. } => "parse failed",
-        _ => "failed",
-    }
 }
 
 unsafe fn toggle_row(app: &mut App, i: i32) {
@@ -1044,6 +1358,7 @@ unsafe fn save_geometry(app: &mut App) {
     };
     app.settings.window = Some(to_saved(ws, dpi));
     app.settings.log_drawer_open = app.log_open;
+    // details_open is already kept current by `Cmd::ToggleDetails`.
     let _ = app.settings.save(&app.data_dir);
 }
 
@@ -1053,7 +1368,93 @@ unsafe fn save_settings(app: &mut App) {
     }
 }
 
+fn cmd_label(c: Cmd) -> &'static str {
+    COMMANDS
+        .iter()
+        .find(|(cc, _, _, _)| *cc == c)
+        .map(|(_, l, _, _)| *l)
+        .unwrap_or("Command")
+}
+
+fn palette_reasons(app: &App) -> Vec<(Cmd, &'static str)> {
+    let (sel, total, b) = (app.model.selected().len(), app.model.total(), busy(app));
+    COMMANDS
+        .iter()
+        .filter_map(|(c, _, _, _)| disabled_reason(*c, sel, total, b).map(|r| (*c, r)))
+        .collect()
+}
+
+unsafe fn focus_region(app: &mut App, r: Region) {
+    let target = match r {
+        Region::Toolbar => app.filter,
+        Region::List => app.list,
+        Region::Details => app.details,
+        Region::Log => app.log_edit,
+    };
+    SetFocus(target);
+    update_region(app);
+}
+
+unsafe fn show_help(app: &App) {
+    let mut t = String::from("Keyboard shortcuts\r\n\r\n");
+    for (_, label, key, _) in COMMANDS {
+        if !key.is_empty() {
+            t.push_str(&format!("{key}\t{label}\r\n"));
+        }
+    }
+    t.push_str("Space\tCheck the highlighted row\r\nCtrl+K\tOpen the command palette\r\n");
+    MessageBoxW(
+        app.hwnd,
+        wide(&t).as_ptr(),
+        wide("Sweepr help").as_ptr(),
+        MB_OK | MB_ICONINFORMATION,
+    );
+}
+
+unsafe fn reset_layout(app: &mut App) {
+    let ws = default_window(app.dpi, &monitors());
+    ShowWindow(app.hwnd, SW_RESTORE);
+    SetWindowPos(
+        app.hwnd,
+        std::ptr::null_mut(),
+        ws.x,
+        ws.y,
+        ws.w,
+        ws.h,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+    for (i, (_, _, w)) in COLS.iter().enumerate() {
+        SendMessageW(
+            app.list,
+            LVM_SETCOLUMNWIDTH,
+            i,
+            to_device(*w, app.dpi) as LPARAM,
+        );
+    }
+    app.settings.details_open = true;
+    set_log_open(app, false);
+    save_geometry(app);
+    append_log(app, "[sweepr] layout reset".into());
+}
+
 unsafe fn run_cmd(app: &mut App, cmd: Cmd) {
+    if let Some(why) = disabled_reason(
+        cmd,
+        app.model.selected().len(),
+        app.model.total(),
+        busy(app),
+    ) {
+        append_log(
+            app,
+            format!("[sweepr] {} unavailable: {why}", cmd_label(cmd)),
+        );
+        return;
+    }
+    if !matches!(cmd, Cmd::ToggleRow | Cmd::Palette) {
+        app.recent.retain(|c| *c != cmd);
+        app.recent.insert(0, cmd);
+        app.recent.truncate(RECENT_MAX);
+    }
     match cmd {
         Cmd::Check => start_discovery(app),
         Cmd::UpdateSelected => {
@@ -1065,6 +1466,11 @@ unsafe fn run_cmd(app: &mut App, cmd: Cmd) {
             start_update(app, s);
         }
         Cmd::ToggleLog => set_log_open(app, !app.log_open),
+        Cmd::ToggleDetails => {
+            app.settings.details_open = !app.settings.details_open;
+            layout(app);
+            save_settings(app);
+        }
         Cmd::Settings => open_settings(app),
         Cmd::ShowIgnored => {
             let on = SendMessageW(app.show_ign, BM_GETCHECK, 0, 0) != BST_CHECKED as isize;
@@ -1088,6 +1494,34 @@ unsafe fn run_cmd(app: &mut App, cmd: Cmd) {
             InvalidateRect(app.list, std::ptr::null(), 0);
             refresh_status(app);
         }
+        Cmd::FocusFilter => {
+            SetFocus(app.filter);
+            SendMessageW(app.filter, EM_SETSEL, 0, -1);
+            update_region(app);
+        }
+        Cmd::SaveLog => save_log(app),
+        Cmd::ShowHelp => show_help(app),
+        Cmd::ResetLayout => reset_layout(app),
+        Cmd::NextRegion => {
+            let r = next_region(app.region, app.settings.details_open, app.log_open);
+            focus_region(app, r);
+        }
+        Cmd::Cancel => {
+            app.cancel.cancel();
+            app.update_cancel.cancel();
+            append_log(app, "[sweepr] cancel requested".into());
+        }
+        Cmd::ToggleRow => {
+            let i = selected_index(app);
+            toggle_row(app, i);
+        }
+        Cmd::Palette => {
+            let reasons = palette_reasons(app);
+            let recent = app.recent.clone();
+            if let Some(c) = palette_dialog(app.hwnd, app.dpi, app.dark, &recent, reasons) {
+                run_cmd(app, c);
+            }
+        }
     }
 }
 
@@ -1097,6 +1531,7 @@ unsafe fn open_settings(app: &mut App) {
         let mut n = n;
         n.window = app.settings.window;
         n.log_drawer_open = app.settings.log_drawer_open;
+        n.details_open = app.settings.details_open;
         app.settings = n;
         let on = [
             app.settings.sources.winget,
@@ -1229,23 +1664,13 @@ unsafe fn on_notify(app: &mut App, lparam: LPARAM) -> LRESULT {
         LVN_GETDISPINFOW => {
             let di = &mut *(lparam as *mut NMLVDISPINFOW);
             let i = di.item.iItem;
-            if i >= 0 && (i as usize) < app.model.visible_len() {
-                if di.item.mask & LVIF_TEXT != 0 {
-                    let col = COLS
-                        .get(di.item.iSubItem as usize)
-                        .map(|c| c.0)
-                        .unwrap_or(Col::Name);
-                    app.scratch = wide(&app.model.text(i as usize, col));
-                    di.item.pszText = app.scratch.as_mut_ptr();
-                }
-                if di.item.mask & LVIF_STATE != 0 && di.item.stateMask & LVIS_STATEIMAGEMASK != 0 {
-                    let idx: u32 = if app.model.is_checked(i as usize) {
-                        2
-                    } else {
-                        1
-                    };
-                    di.item.state = (di.item.state & !LVIS_STATEIMAGEMASK) | (idx << 12);
-                }
+            if i >= 0 && (i as usize) < app.model.visible_len() && di.item.mask & LVIF_TEXT != 0 {
+                let col = COLS
+                    .get(di.item.iSubItem as usize)
+                    .map(|c| c.0)
+                    .unwrap_or(Col::Name);
+                app.scratch = wide(&app.model.text(i as usize, col));
+                di.item.pszText = app.scratch.as_mut_ptr();
             }
             0
         }
@@ -1266,8 +1691,19 @@ unsafe fn on_notify(app: &mut App, lparam: LPARAM) -> LRESULT {
             hti.pt = nm.ptAction;
             SendMessageW(app.list, LVM_HITTEST, 0, &mut hti as *mut _ as LPARAM);
             if hdr.code == NM_CLICK {
-                if hti.flags & LVHT_ONITEMSTATEICON != 0 {
-                    toggle_row(app, hti.iItem);
+                // The checkbox is drawn by `draw_row`; a click in its zone toggles the row.
+                if hti.iItem >= 0 {
+                    let mut rc: RECT = std::mem::zeroed();
+                    rc.left = LVIR_BOUNDS as i32;
+                    SendMessageW(
+                        app.list,
+                        LVM_GETITEMRECT,
+                        hti.iItem as usize,
+                        &mut rc as *mut _ as LPARAM,
+                    );
+                    if nm.ptAction.x - rc.left < to_device(CHECK_ZONE_PX, app.dpi) {
+                        toggle_row(app, hti.iItem);
+                    }
                 }
             } else {
                 row_menu(app, hti.iItem);
@@ -1277,16 +1713,23 @@ unsafe fn on_notify(app: &mut App, lparam: LPARAM) -> LRESULT {
         LVN_KEYDOWN => {
             let kd = &*(lparam as *const NMLVKEYDOWN);
             if kd.wVKey == VK_SPACE || kd.wVKey == VK_RETURN {
-                let sel = SendMessageW(
-                    app.list,
-                    LVM_GETNEXTITEM,
-                    usize::MAX,
-                    LVNI_SELECTED as LPARAM,
-                ) as i32;
-                toggle_row(app, sel);
+                run_cmd(app, Cmd::ToggleRow);
             } else if kd.wVKey == VK_F5 {
-                start_discovery(app);
+                run_cmd(app, Cmd::Check);
             }
+            0
+        }
+        LVN_ITEMCHANGED => {
+            let nm = &*(lparam as *const NMLISTVIEW);
+            if nm.uChanged & LVIF_STATE != 0 {
+                update_details(app);
+                InvalidateRect(app.hwnd, &app.rc_list_hdr, 0);
+            }
+            0
+        }
+        NM_SETFOCUS | NM_KILLFOCUS => {
+            update_region(app);
+            InvalidateRect(app.list, std::ptr::null(), 0);
             0
         }
         NM_CUSTOMDRAW => {
@@ -1294,18 +1737,8 @@ unsafe fn on_notify(app: &mut App, lparam: LPARAM) -> LRESULT {
             match cd.nmcd.dwDrawStage {
                 CDDS_PREPAINT => CDRF_NOTIFYITEMDRAW as LRESULT,
                 CDDS_ITEMPREPAINT => {
-                    let p = palette(app.dark);
-                    let i = cd.nmcd.dwItemSpec;
-                    let st =
-                        SendMessageW(app.list, LVM_GETITEMSTATE, i, LVIS_SELECTED as LPARAM) as u32;
-                    if st & LVIS_SELECTED != 0 {
-                        cd.clrTextBk = colorref(p.selection);
-                        cd.clrText = colorref(0xFFFFFF);
-                    } else {
-                        cd.clrTextBk = colorref(p.bg1);
-                        cd.clrText = colorref(p.text);
-                    }
-                    CDRF_DODEFAULT as LRESULT
+                    draw_row(app, cd.nmcd.hdc, cd.nmcd.dwItemSpec);
+                    CDRF_SKIPDEFAULT as LRESULT
                 }
                 _ => CDRF_DODEFAULT as LRESULT,
             }
@@ -1314,30 +1747,326 @@ unsafe fn on_notify(app: &mut App, lparam: LPARAM) -> LRESULT {
     }
 }
 
-unsafe fn draw_primary(app: &App, di: &DRAWITEMSTRUCT) {
-    let p = palette(app.dark);
-    let pressed = di.itemState & ODS_SELECTED != 0;
-    let brush = CreateSolidBrush(colorref(if pressed { p.selection } else { p.primary }));
-    FillRect(di.hDC, &di.rcItem, brush);
-    DeleteObject(brush);
-    SetTextColor(di.hDC, colorref(0xFFFFFF));
-    SetBkMode(di.hDC, TRANSPARENT as i32);
-    let old = SelectObject(di.hDC, app.font as HGDIOBJ);
-    let mut buf = [0u16; 64];
-    let n = GetWindowTextW(di.hwndItem, buf.as_mut_ptr(), 64);
-    let mut r = di.rcItem;
-    DrawTextW(
-        di.hDC,
-        buf.as_ptr(),
-        n,
-        &mut r,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+fn fill(hdc: HDC, r: &RECT, rgb: u32) {
+    unsafe {
+        let b = CreateSolidBrush(colorref(rgb));
+        FillRect(hdc, r, b);
+        DeleteObject(b);
+    }
+}
+
+fn line(hdc: HDC, x0: i32, y0: i32, x1: i32, y1: i32, rgb: u32) {
+    fill(
+        hdc,
+        &RECT {
+            left: x0,
+            top: y0,
+            right: x1.max(x0 + 1),
+            bottom: y1.max(y0 + 1),
+        },
+        rgb,
     );
-    SelectObject(di.hDC, old);
+}
+
+unsafe fn text_in(hdc: HDC, font: HFONT, rgb: u32, r: &RECT, text: &str, flags: u32) {
+    let old = SelectObject(hdc, font as HGDIOBJ);
+    SetTextColor(hdc, colorref(rgb));
+    SetBkMode(hdc, TRANSPARENT as i32);
+    let mut rc = *r;
+    DrawTextW(hdc, wide(text).as_ptr(), -1, &mut rc, flags);
+    SelectObject(hdc, old);
+}
+
+const TXT: u32 = DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX;
+
+/// One list row: surface or `selected` fill, 3 px selection bar, edge-colour row and column
+/// gridlines, own checkbox, and a 2 px focus ring on the focused row of the focused list.
+unsafe fn draw_row(app: &App, hdc: HDC, i: usize) {
+    let p = pal(app);
+    let d = |v: i32| to_device(v, app.dpi);
+    if i >= app.model.visible_len() {
+        return;
+    }
+    let mut rc: RECT = std::mem::zeroed();
+    rc.left = LVIR_BOUNDS as i32;
+    SendMessageW(app.list, LVM_GETITEMRECT, i, &mut rc as *mut _ as LPARAM);
+    let mut cr: RECT = std::mem::zeroed();
+    GetClientRect(app.list, &mut cr);
+    rc.right = rc.right.max(cr.right);
+    let st = SendMessageW(
+        app.list,
+        LVM_GETITEMSTATE,
+        i,
+        (LVIS_SELECTED | LVIS_FOCUSED) as LPARAM,
+    ) as u32;
+    let sel = st & LVIS_SELECTED != 0;
+    fill(hdc, &rc, if sel { p.selected } else { p.surface });
+    if sel {
+        let mut bar = rc;
+        bar.right = bar.left + d(SELECT_BAR_PX);
+        fill(hdc, &bar, p.selection);
+    }
+    line(hdc, rc.left, rc.bottom - 1, rc.right, rc.bottom, p.edge);
+    for (c, (col, _, _)) in COLS.iter().enumerate() {
+        let mut hr: RECT = std::mem::zeroed();
+        SendMessageW(app.header, HDM_GETITEMRECT, c, &mut hr as *mut _ as LPARAM);
+        line(hdc, hr.right - 1, rc.top, hr.right, rc.bottom, p.edge);
+        let mut cell = RECT {
+            left: hr.left + d(8),
+            top: rc.top,
+            right: hr.right - d(8),
+            bottom: rc.bottom - 1,
+        };
+        if c == 0 {
+            let bx = hr.left + d(10);
+            let by = rc.top + (rc.bottom - rc.top - d(CHECK_PX)) / 2;
+            let bxr = RECT {
+                left: bx,
+                top: by,
+                right: bx + d(CHECK_PX),
+                bottom: by + d(CHECK_PX),
+            };
+            let on = app.model.is_checked(i);
+            fill(hdc, &bxr, if on { p.action } else { p.border });
+            if !on {
+                let inner = RECT {
+                    left: bxr.left + 1,
+                    top: bxr.top + 1,
+                    right: bxr.right - 1,
+                    bottom: bxr.bottom - 1,
+                };
+                fill(hdc, &inner, if sel { p.selected } else { p.surface });
+            } else {
+                text_in(
+                    hdc,
+                    app.font,
+                    p.action_fg,
+                    &bxr,
+                    "\u{2713}",
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                );
+            }
+            cell.left = hr.left + d(CHECK_ZONE_PX);
+        }
+        let strong = matches!(col, Col::Name | Col::Available);
+        text_in(
+            hdc,
+            app.font,
+            if strong || sel { p.fg } else { p.muted },
+            &cell,
+            &app.model.text(i, *col),
+            TXT,
+        );
+    }
+    if st & LVIS_FOCUSED != 0 && GetFocus() == app.list {
+        for k in 0..2 {
+            let r = RECT {
+                left: rc.left + k,
+                top: rc.top + k,
+                right: rc.right - k,
+                bottom: rc.bottom - k,
+            };
+            let b = CreateSolidBrush(colorref(p.focus));
+            FrameRect(hdc, &r, b);
+            DeleteObject(b);
+        }
+    }
+}
+
+/// Panel headers, active-region rule, hint bar and ten-segment progress.
+unsafe fn paint(app: &mut App, hdc: HDC) {
+    let p = pal(app);
+    let d = |v: i32| to_device(v, app.dpi);
+    let gap = d(GAP_PX);
+    let count = format!("Updates ({})", app.model.visible_len());
+    let panels = [
+        (app.rc_list_hdr, count.as_str(), Region::List),
+        (app.rc_det_hdr, "Details", Region::Details),
+        (app.rc_log_hdr, "Log", Region::Log),
+    ];
+    for (rc, title, region) in panels {
+        if rc.right <= rc.left {
+            continue;
+        }
+        fill(hdc, &rc, p.raised);
+        line(hdc, rc.left, rc.bottom - 1, rc.right, rc.bottom, p.edge);
+        line(hdc, rc.left, rc.top, rc.right, rc.top + 1, p.edge);
+        if app.region == region {
+            line(
+                hdc,
+                rc.left,
+                rc.top,
+                rc.right,
+                rc.top + d(ACTIVE_RULE_PX),
+                p.selection,
+            );
+        }
+        let mut t = rc;
+        t.left += gap;
+        text_in(hdc, app.font_label, p.fg, &t, title, TXT);
+    }
+    if app.rc_det_hdr.right > app.rc_det_hdr.left {
+        let x = app.rc_det_hdr.left;
+        line(hdc, x, app.rc_det_hdr.top, x + 1, app.rc_hint.top, p.edge);
+    }
+    // Hint bar: up to six clickable hints for the focused region.
+    let hr = app.rc_hint;
+    fill(hdc, &hr, p.background);
+    line(hdc, hr.left, hr.top, hr.right, hr.top + 1, p.edge);
+    app.hint_rects.clear();
+    let mut x = hr.left + gap;
+    for h in hints(app.region, busy(app)) {
+        let mut tw: RECT = std::mem::zeroed();
+        let old = SelectObject(hdc, app.font_label as HGDIOBJ);
+        let k = wide(h.key);
+        DrawTextW(hdc, k.as_ptr(), -1, &mut tw, DT_CALCRECT | DT_SINGLELINE);
+        let a = wide(h.action);
+        let mut aw: RECT = std::mem::zeroed();
+        DrawTextW(hdc, a.as_ptr(), -1, &mut aw, DT_CALCRECT | DT_SINGLELINE);
+        SelectObject(hdc, old);
+        let key_w = tw.right + d(12);
+        let bh = d(20);
+        let top = hr.top + (hr.bottom - hr.top - bh) / 2;
+        let kb = RECT {
+            left: x,
+            top,
+            right: x + key_w,
+            bottom: top + bh,
+        };
+        let b = CreateSolidBrush(colorref(p.border));
+        FrameRect(hdc, &kb, b);
+        DeleteObject(b);
+        text_in(
+            hdc,
+            app.font_label,
+            p.fg,
+            &kb,
+            h.key,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+        let ar = RECT {
+            left: kb.right + d(6),
+            top,
+            right: kb.right + d(6) + aw.right + d(4),
+            bottom: top + bh,
+        };
+        text_in(hdc, app.font_label, p.muted, &ar, h.action, TXT);
+        app.hint_rects.push((
+            RECT {
+                left: kb.left,
+                top: hr.top,
+                right: ar.right,
+                bottom: hr.bottom,
+            },
+            h.cmd,
+        ));
+        x = ar.right + gap * 2;
+    }
+    // Ten-segment determinate progress.
+    if busy(app) && app.prog_total > 0 {
+        let pr = app.rc_prog;
+        let seg_w = (pr.right - pr.left - 9 * d(2)) / 10;
+        let on = segments(app.prog_done, app.prog_total);
+        for k in 0..10 {
+            let l = pr.left + k * (seg_w + d(2));
+            fill(
+                hdc,
+                &RECT {
+                    left: l,
+                    top: pr.top,
+                    right: l + seg_w,
+                    bottom: pr.bottom,
+                },
+                if (k as usize) < on { p.action } else { p.edge },
+            );
+        }
+    }
+}
+
+/// Owner-drawn empty state: 24 px grid motif with the message centred on it.
+unsafe fn draw_empty(app: &App, di: &DRAWITEMSTRUCT) {
+    let p = pal(app);
+    let d = |v: i32| to_device(v, app.dpi);
+    let r = di.rcItem;
+    fill(di.hDC, &r, p.surface);
+    let step = d(24).max(1);
+    let mut x = r.left;
+    while x < r.right {
+        line(di.hDC, x, r.top, x + 1, r.bottom, p.grid);
+        x += step;
+    }
+    let mut y = r.top;
+    while y < r.bottom {
+        line(di.hDC, r.left, y, r.right, y + 1, p.grid);
+        y += step;
+    }
+    let mut buf = [0u16; 512];
+    let n = GetWindowTextW(di.hwndItem, buf.as_mut_ptr(), 512) as usize;
+    let text = String::from_utf16_lossy(&buf[..n]);
+    let (title, hint) = text.split_once("\r\n").unwrap_or((&text, ""));
+    let mid = r.top + (r.bottom - r.top) / 3;
+    let tr = RECT {
+        left: r.left + d(16),
+        top: mid,
+        right: r.right - d(16),
+        bottom: mid + d(28),
+    };
+    text_in(
+        di.hDC,
+        app.font_label,
+        p.fg,
+        &tr,
+        title,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    let hr = RECT {
+        top: tr.bottom,
+        bottom: tr.bottom + d(28),
+        ..tr
+    };
+    text_in(
+        di.hDC,
+        app.font,
+        p.muted,
+        &hr,
+        hint,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
+}
+
+unsafe fn draw_primary(app: &App, di: &DRAWITEMSTRUCT) {
+    let p = pal(app);
+    let pressed = di.itemState & ODS_SELECTED != 0;
+    let bg = if pressed {
+        p.action_pressed
+    } else if app.hover {
+        p.action_hover
+    } else {
+        p.action
+    };
+    fill(di.hDC, &di.rcItem, bg);
+    let mut buf = [0u16; 64];
+    let n = GetWindowTextW(di.hwndItem, buf.as_mut_ptr(), 64) as usize;
+    text_in(
+        di.hDC,
+        app.font,
+        p.action_fg,
+        &di.rcItem,
+        &String::from_utf16_lossy(&buf[..n]),
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
     if di.itemState & ODS_FOCUS != 0 {
-        let mut f = di.rcItem;
-        InflateRect(&mut f, -3, -3);
-        DrawFocusRect(di.hDC, &f);
+        for k in 0..2 {
+            let r = RECT {
+                left: di.rcItem.left + k,
+                top: di.rcItem.top + k,
+                right: di.rcItem.right - k,
+                bottom: di.rcItem.bottom - k,
+            };
+            let b = CreateSolidBrush(colorref(p.focus));
+            FrameRect(di.hDC, &r, b);
+            DeleteObject(b);
+        }
     }
 }
 
@@ -1356,6 +2085,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     match msg {
         WM_CREATE => {
             create_controls(app);
+            app.hc = high_contrast();
             if app.settings.log_drawer_open {
                 set_log_open(app, true);
             }
@@ -1368,7 +2098,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_GETMINMAXINFO => {
             let mm = &mut *(lparam as *mut MINMAXINFO);
-            mm.ptMinTrackSize.x = to_device(900, app.dpi);
+            mm.ptMinTrackSize.x = to_device(1040, app.dpi);
             mm.ptMinTrackSize.y = to_device(480, app.dpi);
             0
         }
@@ -1379,23 +2109,53 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_ERASEBKGND => {
             let mut r: RECT = std::mem::zeroed();
             GetClientRect(hwnd, &mut r);
-            FillRect(wparam as HDC, &r, app.bg0);
+            FillRect(wparam as HDC, &r, app.bg);
             1
         }
-        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT => {
-            let p = palette(app.dark);
-            let on_list = lparam as HWND == app.empty;
-            let edit = msg == WM_CTLCOLOREDIT;
-            SetTextColor(
-                wparam as HDC,
-                colorref(if on_list { p.text_dim } else { p.text }),
+        WM_PAINT => {
+            let mut ps: PAINTSTRUCT = std::mem::zeroed();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            paint(app, hdc);
+            EndPaint(hwnd, &ps);
+            0
+        }
+        WM_LBUTTONDOWN => {
+            let (x, y) = (
+                (lparam & 0xFFFF) as i16 as i32,
+                ((lparam >> 16) & 0xFFFF) as i16 as i32,
             );
-            let bg = if on_list || edit { p.bg1 } else { p.bg0 };
-            SetBkColor(wparam as HDC, colorref(bg));
-            if on_list || edit {
-                app.bg1 as LRESULT
+            let hit = app
+                .hint_rects
+                .iter()
+                .find(|(r, _)| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+                .map(|(_, c)| *c);
+            if let Some(c) = hit {
+                run_cmd(app, c);
+            }
+            0
+        }
+        WM_SYSCOLORCHANGE => {
+            apply_theme(app);
+            0
+        }
+        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT => {
+            let p = pal(app);
+            let h = lparam as HWND;
+            let edit = msg == WM_CTLCOLOREDIT || h == app.details || h == app.log_edit;
+            let fg = if h == app.status {
+                app.sev.color(&p)
             } else {
-                app.bg0 as LRESULT
+                p.fg
+            };
+            SetTextColor(wparam as HDC, colorref(fg));
+            SetBkColor(
+                wparam as HDC,
+                colorref(if edit { p.surface } else { p.background }),
+            );
+            if edit {
+                app.sf as LRESULT
+            } else {
+                app.bg as LRESULT
             }
         }
         WM_DRAWITEM => {
@@ -1404,18 +2164,30 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 draw_primary(app, di);
                 return 1;
             }
+            if di.CtlID as isize == ID_EMPTY {
+                draw_empty(app, di);
+                return 1;
+            }
             0
         }
         WM_NOTIFY => on_notify(app, lparam),
         WM_COMMAND => {
             let id = (wparam & 0xFFFF) as isize;
             let code = ((wparam >> 16) & 0xFFFF) as u32;
+            if code == EN_SETFOCUS {
+                update_region(app);
+            }
             match id {
                 ID_BTN_CHECK => run_cmd(app, Cmd::Check),
                 ID_BTN_UPDATE => run_cmd(app, Cmd::UpdateSelected),
                 ID_BTN_UPDATEALL => run_cmd(app, Cmd::UpdateAll),
                 ID_BTN_SETTINGS => run_cmd(app, Cmd::Settings),
+                ID_BTN_DETAILS => run_cmd(app, Cmd::ToggleDetails),
                 ID_LOG_TOGGLE => run_cmd(app, Cmd::ToggleLog),
+                ID_ACC_FIND => run_cmd(app, Cmd::FocusFilter),
+                ID_ACC_SELALL => run_cmd(app, Cmd::SelectAll),
+                ID_ACC_HELP => run_cmd(app, Cmd::ShowHelp),
+                ID_ACC_REGION => run_cmd(app, Cmd::NextRegion),
                 // code 1 + null lparam = accelerator; a checkbox click sends BN_CLICKED (0) with a handle.
                 ID_SHOW_IGN if lparam == 0 => run_cmd(app, Cmd::ShowIgnored),
                 ID_SHOW_IGN => {
@@ -1429,18 +2201,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     );
                     InvalidateRect(app.list, std::ptr::null(), 0);
                 }
-                ID_BTN_PALETTE => {
-                    if let Some(c) = palette_dialog(hwnd, app.dpi, app.dark) {
-                        run_cmd(app, c);
-                    }
-                }
+                ID_BTN_PALETTE => run_cmd(app, Cmd::Palette),
                 ID_LOG_COPY => copy_to_clipboard(app, &log_text(app)),
+                ID_LOG_SAVE if lparam == 0 => run_cmd(app, Cmd::SaveLog),
                 ID_LOG_SAVE => save_log(app),
-                ID_BTN_CANCEL | IDCANCEL_ID => {
-                    app.cancel.cancel();
-                    app.update_cancel.cancel();
-                    append_log(app, "[sweepr] cancel requested".into());
-                }
+                ID_BTN_CANCEL | IDCANCEL_ID => run_cmd(app, Cmd::Cancel),
                 ID_FILTER if code == EN_CHANGE => {
                     let mut buf = [0u16; 256];
                     let n = GetWindowTextW(app.filter, buf.as_mut_ptr(), 256) as usize;
@@ -1482,6 +2247,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             );
             rebuild_font(app);
             set_row_height(app);
+            apply_theme(app);
             for (i, (_, _, w)) in COLS.iter().enumerate() {
                 SendMessageW(
                     app.list,

@@ -36,6 +36,8 @@ struct Dlg {
     list: HWND,
     choice: Option<Cmd>,
     shown: Vec<Cmd>,
+    recent: Vec<Cmd>,
+    reasons: Vec<(Cmd, &'static str)>,
     data_dir: String,
 }
 
@@ -162,8 +164,8 @@ unsafe extern "system" fn dlg_proc(
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN
         | WM_CTLCOLORDLG => {
             let p = palette(d.dark);
-            SetTextColor(wparam as HDC, colorref(p.text));
-            SetBkColor(wparam as HDC, colorref(p.bg0));
+            SetTextColor(wparam as HDC, colorref(p.fg));
+            SetBkColor(wparam as HDC, colorref(p.background));
             d.brush as LRESULT
         }
         WM_ERASEBKGND => {
@@ -180,19 +182,26 @@ unsafe extern "system" fn dlg_proc(
     }
 }
 
+fn reason_of(d: &Dlg, c: Cmd) -> Option<&'static str> {
+    d.reasons.iter().find(|(cc, _)| *cc == c).map(|(_, r)| *r)
+}
+
 unsafe fn refill(d: &mut Dlg) {
     let mut buf = [0u16; 128];
     let n = GetWindowTextW(d.edit, buf.as_mut_ptr(), 128) as usize;
     let q = String::from_utf16_lossy(&buf[..n]);
-    d.shown = filter_commands(&q);
+    d.shown = filter_commands(&q, &d.recent);
     SendMessageW(d.list, LB_RESETCONTENT, 0, 0);
     for c in &d.shown {
-        let (_, title, key) = COMMANDS.iter().find(|(cc, _, _)| cc == c).unwrap();
-        let line = if key.is_empty() {
-            title.to_string()
-        } else {
-            format!("{title}    ({key})")
-        };
+        let (_, title, key, _) = COMMANDS.iter().find(|(cc, _, _, _)| cc == c).unwrap();
+        // Disabled commands stay listed and say why; the shortcut is always shown.
+        let mut line = title.to_string();
+        if let Some(why) = reason_of(d, *c) {
+            line.push_str(&format!(" - unavailable: {why}"));
+        }
+        if !key.is_empty() {
+            line.push_str(&format!("\t{key}"));
+        }
         SendMessageW(d.list, LB_ADDSTRING, 0, wide(&line).as_ptr() as LPARAM);
     }
     SendMessageW(d.list, LB_SETCURSEL, 0, 0);
@@ -201,8 +210,12 @@ unsafe fn refill(d: &mut Dlg) {
 unsafe fn choose(d: &mut Dlg) {
     let i = SendMessageW(d.list, LB_GETCURSEL, 0, 0);
     if i >= 0 {
-        d.choice = d.shown.get(i as usize).copied();
-        d.done = true;
+        if let Some(c) = d.shown.get(i as usize).copied() {
+            if reason_of(d, c).is_none() {
+                d.choice = Some(c);
+                d.done = true;
+            }
+        }
     }
 }
 
@@ -248,7 +261,7 @@ fn new_dlg(dark: bool, dpi: u32, data_dir: &Path) -> Box<Dlg> {
         Box::new(Dlg {
             dark,
             dpi,
-            brush: CreateSolidBrush(colorref(palette(dark).bg0)),
+            brush: CreateSolidBrush(colorref(palette(dark).background)),
             done: false,
             ok: false,
             font: make_font(dpi),
@@ -259,6 +272,8 @@ fn new_dlg(dark: bool, dpi: u32, data_dir: &Path) -> Box<Dlg> {
             list: std::ptr::null_mut(),
             choice: None,
             shown: Vec::new(),
+            recent: Vec::new(),
+            reasons: Vec::new(),
             data_dir: data_dir.display().to_string(),
         })
     }
@@ -289,7 +304,7 @@ pub fn settings_dialog(
     unsafe {
         register("SweeprSettings", Some(dlg_proc));
         let mut d = new_dlg(dark, dpi, data_dir);
-        let (w, h) = (to_device(440, dpi), to_device(300, dpi));
+        let (w, h) = (to_device(460, dpi), to_device(340, dpi));
         let (x, y) = center(parent, w, h);
         let hwnd = CreateWindowExW(
             WS_EX_DLGMODALFRAME,
@@ -323,7 +338,7 @@ pub fn settings_dialog(
                 "BUTTON",
                 names[i],
                 (BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
-                (16 + 130 * i as i32, 38, 120, 22),
+                (16 + 130 * i as i32, 38, 120, 32),
                 300 + i as isize,
                 &d,
             );
@@ -339,7 +354,7 @@ pub fn settings_dialog(
             "STATIC",
             "Seconds to wait for each manager (5 to 3600):",
             0,
-            (16, 76, 400, 20),
+            (16, 82, 420, 20),
             0,
             &d,
         );
@@ -348,17 +363,17 @@ pub fn settings_dialog(
             "EDIT",
             &s.timeout_secs.to_string(),
             (ES_NUMBER as u32) | WS_BORDER | WS_TABSTOP,
-            (16, 98, 80, 24),
+            (16, 106, 96, 32),
             301,
             &d,
         );
-        child(hwnd, "STATIC", "Theme:", 0, (16, 138, 80, 20), 0, &d);
+        child(hwnd, "STATIC", "Theme:", 0, (16, 150, 80, 20), 0, &d);
         d.theme = child(
             hwnd,
             "COMBOBOX",
             "",
             (CBS_DROPDOWNLIST as u32) | WS_TABSTOP,
-            (16, 160, 160, 120),
+            (16, 174, 160, 120),
             302,
             &d,
         );
@@ -372,13 +387,13 @@ pub fn settings_dialog(
         };
         SendMessageW(d.theme, CB_SETCURSEL, sel, 0);
         let loc = format!("Data folder: {}", data_dir.display());
-        child(hwnd, "STATIC", &loc, 0, (16, 198, 400, 20), 0, &d);
+        child(hwnd, "STATIC", &loc, 0, (16, 218, 420, 20), 0, &d);
         child(
             hwnd,
             "BUTTON",
             "Open data folder",
             WS_TABSTOP,
-            (16, 228, 130, 28),
+            (16, 244, 140, 40),
             ID_OPEN_DIR,
             &d,
         );
@@ -387,7 +402,7 @@ pub fn settings_dialog(
             "BUTTON",
             "OK",
             (BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-            (250, 228, 80, 28),
+            (264, 244, 80, 40),
             ID_OK,
             &d,
         );
@@ -396,7 +411,7 @@ pub fn settings_dialog(
             "BUTTON",
             "Cancel",
             WS_TABSTOP,
-            (340, 228, 80, 28),
+            (352, 244, 80, 40),
             ID_CANCEL,
             &d,
         );
@@ -427,11 +442,23 @@ pub fn settings_dialog(
 }
 
 /// Ctrl+K palette. Returns the chosen command, or `None` if dismissed.
-pub fn palette_dialog(parent: HWND, dpi: u32, dark: bool) -> Option<Cmd> {
+pub fn palette_dialog(
+    parent: HWND,
+    dpi: u32,
+    dark: bool,
+    recent: &[Cmd],
+    reasons: Vec<(Cmd, &'static str)>,
+) -> Option<Cmd> {
     unsafe {
         register("SweeprPalette", Some(dlg_proc));
         let mut d = new_dlg(dark, dpi, Path::new(""));
-        let (w, h) = (to_device(480, dpi), to_device(280, dpi));
+        d.recent = recent.to_vec();
+        d.reasons = reasons;
+        // 40 px comfortable search field, 8 visible rows of 28 px.
+        let (w, h) = (
+            to_device(520, dpi),
+            to_device(8 + 40 + 8 + 8 * 28 + 8 + 4, dpi),
+        );
         let (x, y) = center(parent, w, h);
         let hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW,
@@ -453,7 +480,7 @@ pub fn palette_dialog(parent: HWND, dpi: u32, dark: bool) -> Option<Cmd> {
             "EDIT",
             "",
             WS_BORDER | WS_TABSTOP,
-            (8, 8, 462, 26),
+            (8, 8, 502, 40),
             ID_EDIT,
             &d,
         );
@@ -461,11 +488,14 @@ pub fn palette_dialog(parent: HWND, dpi: u32, dark: bool) -> Option<Cmd> {
             hwnd,
             "LISTBOX",
             "",
-            (LBS_NOTIFY as u32) | WS_TABSTOP,
-            (8, 42, 462, 226),
+            (LBS_NOTIFY as u32) | (LBS_USETABSTOPS as u32) | WS_TABSTOP,
+            (8, 56, 502, 8 * 28 + 4),
             ID_LIST,
             &d,
         );
+        SendMessageW(d.list, LB_SETITEMHEIGHT, 0, to_device(28, dpi) as LPARAM);
+        let tab = [250i32]; // dialog units
+        SendMessageW(d.list, LB_SETTABSTOPS, 1, tab.as_ptr() as LPARAM);
         refill(&mut d);
         SetFocus(d.edit);
         run_modal(parent, hwnd, dp, true);

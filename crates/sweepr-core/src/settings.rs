@@ -66,6 +66,8 @@ pub struct Settings {
     pub theme: Theme,
     pub window: Option<WindowState>,
     pub log_drawer_open: bool,
+    /// Details panel visible. Added after 0.1.0; older files get the default (open).
+    pub details_open: bool,
     /// Set when the file came from a newer Sweepr; `save` then does nothing.
     #[serde(skip)]
     pub read_only: bool,
@@ -82,6 +84,7 @@ impl Default for Settings {
             theme: Theme::System,
             window: None,
             log_drawer_open: false,
+            details_open: true,
             read_only: false,
         }
     }
@@ -383,6 +386,20 @@ mod tests {
             fs::read_to_string(d.join("settings.json")).unwrap(),
             original
         );
+    }
+
+    #[test]
+    fn file_without_details_open_loads_with_panel_open() {
+        let d = tmp("no-details-open");
+        fs::write(
+            d.join("settings.json"),
+            format!(r#"{{"version":{SETTINGS_VERSION},"ignore":["x"],"log_drawer_open":true}}"#),
+        )
+        .unwrap();
+        let r = Settings::load(&d);
+        assert!(r.settings.details_open);
+        assert!(r.settings.log_drawer_open);
+        assert_eq!(r.settings.ignore, vec!["x".to_string()]);
     }
 
     #[test]
