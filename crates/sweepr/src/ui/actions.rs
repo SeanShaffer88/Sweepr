@@ -68,6 +68,7 @@ pub enum Cmd {
     SelectNone,
     FocusFilter,
     SaveLog,
+    History,
     ShowHelp,
     ResetLayout,
     NextRegion,

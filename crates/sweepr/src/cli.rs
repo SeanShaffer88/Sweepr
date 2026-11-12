@@ -23,6 +23,7 @@ pub struct Cli {
     pub version: bool,
     pub clean: bool,
     pub uninstall: bool,
+    pub history: bool,
     pub elevated_run: Option<PathBuf>,
     pub pipe: Option<String>,
 }
@@ -38,6 +39,7 @@ USAGE: sweepr [OPTIONS]        (no options starts the window)
                       system-scope packages share one UAC prompt on Windows
   --silent            no text list on stdout
   --verbose, --debug, --trace   more detail on stderr
+  --history           print past updates (newest first) with undo hints; --json for JSON
   --clean             delete Sweepr's stored data (settings, logs, jobs); the program stays
   --uninstall         delete all of Sweepr's stored data and its data folder;
                       remove the program itself from Settings > Apps (installed)
@@ -65,6 +67,7 @@ pub fn parse_args(args: &[String]) -> Result<Cli, String> {
             "--version" => c.version = true,
             "--clean" => c.clean = true,
             "--uninstall" => c.uninstall = true,
+            "--history" => c.history = true,
             "--elevated-run" => {
                 let v = it.next().ok_or("--elevated-run needs a job path")?;
                 c.elevated_run = Some(PathBuf::from(v));
@@ -103,6 +106,13 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Option<
             .unwrap_or_default();
         return Some(clean(&data_dir(&exe_dir), c.uninstall, c.silent, out, err));
     }
+    if c.history {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        return Some(history(&data_dir(&exe_dir), c.json, out));
+    }
     if let Some(job) = &c.elevated_run {
         let Some(pipe) = &c.pipe else {
             let _ = writeln!(err, "sweepr: --elevated-run needs --pipe");
@@ -130,6 +140,53 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Option<
         return Some(run_headless_with(&c, &|| all_adapters(), &settings, out));
     }
     None
+}
+
+/// `--history`: past updates, newest first (at most 50 as text, all as JSON).
+pub fn history(dir: &std::path::Path, json: bool, out: &mut dyn Write) -> i32 {
+    use sweepr_core::history::{line, load, undo_hint};
+    let all = load(dir);
+    if json {
+        let _ = serde_json::to_writer_pretty(&mut *out, &all);
+        let _ = writeln!(out);
+        return 0;
+    }
+    if all.is_empty() {
+        let _ = writeln!(out, "no updates recorded yet");
+    }
+    for e in all.iter().take(50) {
+        let _ = writeln!(out, "{}", line(e));
+        if let Some(h) = undo_hint(e) {
+            let _ = writeln!(
+                out,
+                "    undo (text only, may not work for every package): {h}"
+            );
+        }
+    }
+    0
+}
+
+/// Records each result of a batch. `pkgs` supplies the versions; history problems never fail an update.
+pub fn record_history(dir: &std::path::Path, pkgs: &[UpdatePackage], results: &[UpdateResult]) {
+    let now = sweepr_core::history::now();
+    let entries: Vec<sweepr_core::history::Entry> = results
+        .iter()
+        .filter_map(|r| {
+            let p = pkgs
+                .iter()
+                .find(|p| p.manager == r.manager && p.id == r.id)?;
+            Some(sweepr_core::history::Entry {
+                ts: now,
+                manager: r.manager,
+                id: r.id.clone(),
+                from: p.current_version.clone(),
+                to: p.available_version.clone(),
+                ok: r.ok,
+                code: r.code,
+            })
+        })
+        .collect();
+    let _ = sweepr_core::history::append(dir, &entries);
 }
 
 /// `--clean` / `--uninstall`: delete what Sweepr stored in its data dir.
@@ -368,6 +425,7 @@ pub fn update_all(
     if results.iter().any(|r| !r.ok) {
         failed = true;
     }
+    record_history(dir, &pkgs, &results);
 
     if c.json {
         let _ = serde_json::to_writer_pretty(&mut *out, &results);
@@ -509,6 +567,36 @@ mod tests {
     }
 
     #[test]
+    fn history_flag_parses_and_prints() {
+        assert!(parse_args(&args(&["--history"])).unwrap().history);
+        let d = std::env::temp_dir().join(format!("sweepr-cli-hist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mut out = Vec::new();
+        assert_eq!(history(&d, false, &mut out), 0);
+        assert!(String::from_utf8(out).unwrap().contains("no updates"));
+        sweepr_core::history::append(
+            &d,
+            &[sweepr_core::history::Entry {
+                ts: 0,
+                manager: sweepr_core::model::Manager::Winget,
+                id: "A.B".into(),
+                from: "1".into(),
+                to: "2".into(),
+                ok: true,
+                code: None,
+            }],
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        history(&d, false, &mut out);
+        let t = String::from_utf8(out).unwrap();
+        assert!(t.contains("A.B") && t.contains("winget install --id A.B --version 1"));
+        let mut out = Vec::new();
+        history(&d, true, &mut out);
+        assert!(String::from_utf8(out).unwrap().contains("\"id\": \"A.B\""));
+    }
+
+    #[test]
     fn clean_and_uninstall_flags_parse() {
         let c = parse_args(&args(&["--clean"])).unwrap();
         assert!(c.clean && !c.uninstall);
@@ -640,6 +728,9 @@ mod tests {
         assert!(std::path::Path::new("/tmp/sweepr-update-all-marker").exists());
         let s = String::from_utf8(o).unwrap();
         assert!(s.contains("fd") && s.contains("updated"), "{s}");
+        let h = sweepr_core::history::load(&d);
+        assert_eq!(h.len(), 1, "history should record the update");
+        assert!(h[0].ok);
     }
 
     #[cfg(unix)]

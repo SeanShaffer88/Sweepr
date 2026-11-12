@@ -4,7 +4,7 @@
 use super::actions::{
     build_jobs, disabled_reason, empty_state, redact, uac_prompts_needed, Cmd, COMMANDS,
 };
-use super::dialogs::{palette_dialog, settings_dialog};
+use super::dialogs::{palette_dialog, settings_dialog, text_dialog};
 use super::geometry::{default_window, restore, to_device, to_saved};
 use super::model::{Col, ListModel, MgrState, Sort};
 use super::present::{
@@ -155,6 +155,7 @@ struct App {
     prog_done: usize,
     prog_total: usize,
     details_shown: String,
+    batch: Vec<UpdatePackage>,
     cancel: CancelToken,
     update_cancel: CancelToken,
     checking: bool,
@@ -232,6 +233,7 @@ const ID_ACC_FIND: isize = 130;
 const ID_ACC_SELALL: isize = 131;
 const ID_ACC_HELP: isize = 132;
 const ID_ACC_REGION: isize = 133;
+const ID_ACC_HISTORY: isize = 134;
 const WM_MOUSELEAVE_MSG: u32 = 0x02A3;
 
 fn accelerators() -> Vec<ACCEL> {
@@ -251,6 +253,7 @@ fn accelerators() -> Vec<ACCEL> {
         k(V | CT | SH, b'U' as u16, ID_BTN_UPDATEALL),
         k(V | CT, b'L' as u16, ID_LOG_TOGGLE),
         k(V | CT, b'D' as u16, ID_BTN_DETAILS),
+        k(V | CT, b'H' as u16, ID_ACC_HISTORY),
         k(V | CT, b'F' as u16, ID_ACC_FIND),
         k(V | CT, b'A' as u16, ID_ACC_SELALL),
         k(V | CT, b'S' as u16, ID_LOG_SAVE),
@@ -260,7 +263,7 @@ fn accelerators() -> Vec<ACCEL> {
     ]
 }
 
-fn high_contrast() -> bool {
+pub(super) fn high_contrast() -> bool {
     unsafe {
         let mut hc: HIGHCONTRASTW = std::mem::zeroed();
         hc.cbSize = std::mem::size_of::<HIGHCONTRASTW>() as u32;
@@ -280,9 +283,9 @@ fn sys_rgb(i: SYS_COLOR_INDEX) -> u32 {
 }
 
 /// The active palette: TesselGUI GitHub tokens, or system colors in Windows high contrast.
-fn pal(app: &App) -> Palette {
-    if !app.hc {
-        return palette(app.dark);
+pub(super) fn palette_for(dark: bool, hc: bool) -> Palette {
+    if !hc {
+        return palette(dark);
     }
     let (win, text, face) = (
         sys_rgb(COLOR_WINDOW),
@@ -311,6 +314,10 @@ fn pal(app: &App) -> Palette {
         success: text,
         danger: text,
     }
+}
+
+fn pal(app: &App) -> Palette {
+    palette_for(app.dark, app.hc)
 }
 
 /// Creates the window and runs the message loop. Returns the process exit code.
@@ -407,6 +414,7 @@ pub fn run_gui(settings: Settings, notice: Option<SwpError>, data_dir: PathBuf) 
             prog_done: 0,
             prog_total: 0,
             details_shown: String::new(),
+            batch: Vec::new(),
             cancel: CancelToken::new(),
             update_cancel: CancelToken::new(),
             checking: false,
@@ -1142,6 +1150,7 @@ unsafe fn start_update(app: &mut App, sel: Vec<UpdatePackage>) {
         return;
     }
     app.updating = true;
+    app.batch = sel.clone();
     app.update_cancel = CancelToken::new();
     app.running = String::new();
     app.prog_done = 0;
@@ -1251,6 +1260,7 @@ unsafe fn drain_events(app: &mut App) {
                     };
                     if state != ItemState::Started {
                         app.prog_done += 1;
+                        record_history(app, &id, state == ItemState::Done, code);
                     }
                     app.running = format!("{id}: {s}");
                     append_log(
@@ -1278,6 +1288,46 @@ unsafe fn drain_events(app: &mut App) {
         }
     }
     refresh_status(app);
+}
+
+/// Writes one history line for a finished item. Failure to write is logged, never fatal.
+unsafe fn record_history(app: &mut App, id: &str, ok: bool, code: Option<i32>) {
+    let Some(p) = app.batch.iter().find(|p| p.id == id) else {
+        return;
+    };
+    let e = sweepr_core::history::Entry {
+        ts: sweepr_core::history::now(),
+        manager: p.manager,
+        id: p.id.clone(),
+        from: p.current_version.clone(),
+        to: p.available_version.clone(),
+        ok,
+        code,
+    };
+    if let Err(err) = sweepr_core::history::append(&app.data_dir, &[e]) {
+        append_log(app, format!("[sweepr] could not write history: {err}"));
+    }
+}
+
+unsafe fn show_history(app: &App) {
+    use sweepr_core::history::{line, load, undo_hint};
+    let all = load(&app.data_dir);
+    let mut t = String::new();
+    if all.is_empty() {
+        t.push_str(
+            "No updates recorded yet.\nUpdates you run from Sweepr appear here, newest first.\n",
+        );
+    } else {
+        t.push_str("Newest first. Undo lines are text to copy and run yourself; downgrades may not work for every package.\n\n");
+    }
+    for e in all.iter().take(200) {
+        t.push_str(&line(e));
+        t.push('\n');
+        if let Some(h) = undo_hint(e) {
+            t.push_str(&format!("    undo: {h}\n"));
+        }
+    }
+    text_dialog(app.hwnd, app.dpi, app.dark, "Update history", &t);
 }
 
 unsafe fn toggle_row(app: &mut App, i: i32) {
@@ -1500,6 +1550,7 @@ unsafe fn run_cmd(app: &mut App, cmd: Cmd) {
             update_region(app);
         }
         Cmd::SaveLog => save_log(app),
+        Cmd::History => show_history(app),
         Cmd::ShowHelp => show_help(app),
         Cmd::ResetLayout => reset_layout(app),
         Cmd::NextRegion => {
@@ -2188,6 +2239,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 ID_ACC_SELALL => run_cmd(app, Cmd::SelectAll),
                 ID_ACC_HELP => run_cmd(app, Cmd::ShowHelp),
                 ID_ACC_REGION => run_cmd(app, Cmd::NextRegion),
+                ID_ACC_HISTORY => run_cmd(app, Cmd::History),
                 // code 1 + null lparam = accelerator; a checkbox click sends BN_CLICKED (0) with a handle.
                 ID_SHOW_IGN if lparam == 0 => run_cmd(app, Cmd::ShowIgnored),
                 ID_SHOW_IGN => {
