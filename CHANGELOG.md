@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-11
+
 ### Added (next slice)
 - Update history: each update is recorded locally (`history.jsonl`, capped), shown with Ctrl+H or `--history [--json]`, with copy-and-run undo hints per manager. Hints are text only.
 - Optional daily check through Task Scheduler (`--scheduled-check`): checks only, remembers the result, and asks before opening the window when the outdated set is new or changed.
