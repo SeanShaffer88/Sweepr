@@ -243,6 +243,17 @@ pub fn empty_state(
     ))
 }
 
+/// The one button shown on an empty list, matched to the title `empty_state` gave.
+pub fn empty_action(title: &str) -> (&'static str, Cmd) {
+    if title.starts_with("No package manager") {
+        ("Open settings", Cmd::Settings)
+    } else if title.starts_with("Sweepr could not read") {
+        ("Show the log", Cmd::ToggleLog)
+    } else {
+        ("Check again", Cmd::Check)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,6 +413,19 @@ mod tests {
         let r = redact(log, "C:\\Users\\Sean");
         assert!(!r.to_lowercase().contains("sean"), "{r}");
         assert!(r.contains("%USERPROFILE%\\scoop\\apps\\fd"));
+    }
+
+    #[test]
+    fn empty_state_actions_match_the_situation() {
+        assert_eq!(empty_action("No package manager found").1, Cmd::Settings);
+        assert_eq!(
+            empty_action("Sweepr could not read some package managers").1,
+            Cmd::ToggleLog
+        );
+        assert_eq!(
+            empty_action("Everything is up to date"),
+            ("Check again", Cmd::Check)
+        );
     }
 
     #[test]

@@ -2,7 +2,8 @@
 //! Runtime behavior is Unverified until run on a real machine (see AUDIT.md).
 
 use super::actions::{
-    build_jobs, disabled_reason, empty_state, redact, uac_prompts_needed, Cmd, COMMANDS,
+    build_jobs, disabled_reason, empty_action, empty_state, redact, uac_prompts_needed, Cmd,
+    COMMANDS,
 };
 use super::dialogs::{palette_dialog, settings_dialog, text_dialog};
 use super::geometry::{default_window, restore, to_device, to_saved};
@@ -79,6 +80,7 @@ const ID_LOG_SAVE: isize = 123;
 const ID_BTN_CANCEL: isize = 124;
 const ID_DETAILS: isize = 125;
 const ID_BTN_DETAILS: isize = 126;
+const ID_EMPTY_BTN: isize = 127;
 const IDCANCEL_ID: isize = 2;
 
 const MANAGERS: [Manager; 3] = [Manager::Winget, Manager::Choco, Manager::Scoop];
@@ -162,6 +164,8 @@ struct App {
     details_shown: String,
     batch: Vec<UpdatePackage>,
     pending_update: Option<Ready>,
+    empty_btn: HWND,
+    empty_cmd: Cmd,
     checking_self: bool,
     cancel: CancelToken,
     update_cancel: CancelToken,
@@ -423,6 +427,8 @@ pub fn run_gui(settings: Settings, notice: Option<SwpError>, data_dir: PathBuf) 
             details_shown: String::new(),
             batch: Vec::new(),
             pending_update: None,
+            empty_btn: std::ptr::null_mut(),
+            empty_cmd: Cmd::Check,
             checking_self: false,
             cancel: CancelToken::new(),
             update_cancel: CancelToken::new(),
@@ -697,6 +703,15 @@ unsafe fn create_controls(app: &mut App) {
         ID_LIST,
     );
     app.empty = mk(app, "STATIC", "", SS_OWNERDRAW_STYLE, 0, ID_EMPTY);
+    app.empty_btn = mk(
+        app,
+        "BUTTON",
+        "Check again",
+        BS_PUSHBUTTON as u32 | WS_TABSTOP,
+        0,
+        ID_EMPTY_BTN,
+    );
+    ShowWindow(app.empty_btn, SW_HIDE);
     app.details = mk(
         app,
         "EDIT",
@@ -871,6 +886,17 @@ unsafe fn layout(app: &mut App) {
         rx -= gap;
     }
     place(ID_FILTER, x, gap, (rx - x).max(d(80)));
+    // Center the text (and the placeholder) vertically in the 32 px box; the default formatting
+    // rectangle hugs the top and clipped the placeholder in the first field capture.
+    let mut fr: RECT = std::mem::zeroed();
+    GetClientRect(app.filter, &mut fr);
+    let line_h = d(DENSE_PX) * 4 / 3;
+    let inset = ((fr.bottom - fr.top - line_h) / 2).max(0);
+    fr.top += inset;
+    fr.bottom -= inset;
+    fr.left += d(6);
+    fr.right -= d(6);
+    SendMessageW(app.filter, EM_SETRECT, 0, &fr as *const _ as LPARAM);
 
     let toolbar_h = ch + 2 * gap;
     let (hint_h, status_h, ph) = (d(HINT_H), d(STATUS_H), d(PANEL_HEADER_PX));
@@ -900,6 +926,17 @@ unsafe fn layout(app: &mut App) {
         body_top + ph + hh,
         list_w,
         (body_h - ph - hh).max(0),
+        1,
+    );
+    // Empty-state action sits under the hint that `draw_empty` paints (title, then hint).
+    let (et, eh) = (body_top + ph + hh, (body_h - ph - hh).max(0));
+    let bw = d(160);
+    MoveWindow(
+        app.empty_btn,
+        (list_w - bw) / 2,
+        et + eh / 3 + d(28) * 2 + gap,
+        bw,
+        ch,
         1,
     );
     if det_w > 0 {
@@ -1084,10 +1121,15 @@ unsafe fn refresh_status(app: &mut App) {
     match empty_state(&app.states, app.model.total(), app.checking) {
         Some((title, hint)) => {
             SetWindowTextW(app.empty, wide(&format!("{title}\r\n{hint}")).as_ptr());
+            let (label, cmd) = empty_action(title);
+            app.empty_cmd = cmd;
+            SetWindowTextW(app.empty_btn, wide(label).as_ptr());
             ShowWindow(app.empty, SW_SHOW);
+            ShowWindow(app.empty_btn, SW_SHOW);
         }
         None => {
             ShowWindow(app.empty, SW_HIDE);
+            ShowWindow(app.empty_btn, SW_HIDE);
         }
     }
     update_details(app);
@@ -2391,6 +2433,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 ID_BTN_UPDATEALL => run_cmd(app, Cmd::UpdateAll),
                 ID_BTN_SETTINGS => run_cmd(app, Cmd::Settings),
                 ID_BTN_DETAILS => run_cmd(app, Cmd::ToggleDetails),
+                ID_EMPTY_BTN => {
+                    let c = app.empty_cmd;
+                    run_cmd(app, c)
+                }
                 ID_LOG_TOGGLE => run_cmd(app, Cmd::ToggleLog),
                 ID_ACC_FIND => run_cmd(app, Cmd::FocusFilter),
                 ID_ACC_SELALL => run_cmd(app, Cmd::SelectAll),

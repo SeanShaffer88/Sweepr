@@ -43,6 +43,15 @@ Use `Sweepr-v0.1.0-x64-Portable.zip` unpacked anywhere.
     tooltips wait about half a second; Reset layout restores the first-run
     window; turn on Windows high contrast and the main window follows it.
 
+12c. New slice (never run): filter placeholder is fully visible; Ctrl+H shows
+    history after one update (with an undo line); Settings > schedule on, then
+    Task Scheduler shows `Sweepr\Daily check`, and running it prints nothing
+    but asks to open the window only when new updates exist; off removes it;
+    "Check for Sweepr updates" says up to date or offers a verified install;
+    empty-list button does what its label says; Settings looks right under
+    Windows high contrast. For a non-English Windows, `winget upgrade` output
+    parses (capture it with tools/capture-fixtures.ps1 and send it).
+
 ## 3. CLI
 
 13. `sweepr.exe --headless` lists the same outdated set as the window.

@@ -19,3 +19,4 @@
 - Full gate before any publish: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, plus a linked Windows-target build.
 - Windows runtime behaviour is Unverified until it runs on a real machine; see `AUDIT.md` and `docs/field-pass.md`.
 - Releases need the owner's explicit confirmation first. Never ship an MSI.
+- The only network code in Sweepr itself is the release check in `ui/net.rs` and `ui/updater.rs`; it must stay switch-off-able, HTTPS only, limited to this repository's releases, and verified by SHA-256 before anything runs. No telemetry.

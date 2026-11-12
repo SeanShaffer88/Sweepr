@@ -2,11 +2,11 @@
 
 ## TL;DR
 
-One window listing every outdated WinGet, Chocolatey and Scoop package; pick some or all and update them with at most one UAC prompt. Native Rust/Win32, no telemetry, no accounts, no background service. Free, MIT.
+One window listing every outdated WinGet, Chocolatey and Scoop package; pick some or all and update them with at most one UAC prompt. Native Rust/Win32, no telemetry, no accounts, no background service (an optional daily check uses Windows Task Scheduler). Free, MIT.
 
 One window. Every outdated app. Update them all with at most one UAC prompt.
 
-Sweepr is a small native Windows updater over **WinGet**, **Chocolatey** and **Scoop**. It lists what is outdated, lets you pick, and updates. It works offline apart from what the managers themselves do. No telemetry. No accounts. No background service.
+Sweepr is a small native Windows updater over **WinGet**, **Chocolatey** and **Scoop**. It lists what is outdated, lets you pick, and updates. Apart from what the managers themselves do, its only network use is an optional look at this project's GitHub releases for a newer Sweepr (on by default, switch it off in Settings; it always asks before installing). No telemetry. No accounts. No background service.
 
 > Status: **v0.1.0 released.** The parser for WinGet is verified against a real capture; the Windows GUI and the elevation path have been cross-compiled only and not yet run on a real machine — the [field pass](docs/field-pass.md) is still to run. See [AUDIT.md](AUDIT.md).
 
@@ -18,7 +18,11 @@ Sweepr is a small native Windows updater over **WinGet**, **Chocolatey** and **S
 - Log drawer with copy and save. Saved logs have your profile path redacted.
 - Command palette (Ctrl+K) and keyboard shortcuts.
 - Dark and light theme, following Windows or set by hand. Per-monitor DPI. Window size and position remembered.
-- CLI mode for scripting: `--headless`, `--json`, `--dry-run`.
+- Update history (Ctrl+H, or `--history`): every update you run from Sweepr, newest first, with a copy-and-run undo line. Stored only in Sweepr's data folder.
+- Optional daily check through Windows Task Scheduler (Settings). It only checks, then asks before opening the window when something new is outdated.
+- Sweepr updates itself: it checks GitHub releases (at most once a day), downloads the Setup or Portable asset, verifies its SHA-256 against the release's `SHA256SUMS.txt`, and asks before installing. Switch off in Settings. Releases are not code-signed; the checksum guards against corruption, not against a compromised release.
+- WinGet output in other languages is read from the table layout, not from English header words (verified on synthetic fixtures only).
+- CLI mode for scripting: `--headless`, `--json`, `--dry-run`, `--update-all`, `--history`.
 
 ## Shortcuts
 
@@ -31,6 +35,7 @@ Sweepr is a small native Windows updater over **WinGet**, **Chocolatey** and **S
 | Ctrl+, | Settings |
 | Ctrl+I | Show / hide ignored |
 | Ctrl+K | Command palette |
+| Ctrl+H | Update history |
 | Ctrl+F | Find (focus the filter) |
 | Ctrl+A | Select all packages (all text inside a text box) |
 | Ctrl+S | Save log |
@@ -48,6 +53,8 @@ sweepr.exe --headless --json     list as JSON
 sweepr.exe --headless --dry-run  show what would run, run nothing
 sweepr.exe --update-all          update every outdated package (one UAC prompt for system packages)
 sweepr.exe --update-all --json   update all, report results as JSON
+sweepr.exe --history             past updates with undo hints (add --json for JSON)
+sweepr.exe --scheduled-check     one check for the daily task; asks before opening the window
 sweepr.exe --clean               delete Sweepr's stored data (settings, logs, jobs)
 sweepr.exe --uninstall           delete all stored data and its data folder
 ```

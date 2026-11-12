@@ -20,5 +20,10 @@
 | Tier t1b | Stock Win32 GUI utility: no rich renderer, service, driver, shell extension or autostart. |
 | TesselGUI r2 GitHub preset is the only palette | r2 (v1.2.0) made GitHub the default and demoted Crimson to an optional preset. Tokens are copied from TesselGUI `tokens.json` and the contrast contract is re-checked in `theme.rs` tests. Other presets are deferred. |
 | Owner-drawn list rows | The stock ListView cannot colour gridlines or draw a selection bar; `NM_CUSTOMDRAW` draws rows, edge-colour gridlines and the checkbox. |
+| Self-update asks before installing | Download and SHA-256 check happen in the background; the swap (Setup.exe silent, or unpack and exe rename for portable) only after a Yes. Unattended install is a possible later mode. Own SHA-256 (tested against FIPS vectors) and WinHTTP via `windows-sys`: no new crates. |
+| Self-update is on by default, with a Settings switch | Owner decision (2026-11-11): auto-update is allowed in all projects with an option to disable. It is the only network use in Sweepr itself. |
+| Telemetry not built | The owner said the no-telemetry rule can be dismissed for this use case but did not ask for any. Nothing is collected or sent. |
+| Daily check via `schtasks.exe` | No service or tray; the task runs `sweepr --scheduled-check`, which never installs. Fixed argument vector, validated time and path. |
+| History as capped JSON lines | Simple, damage-tolerant (bad lines skipped), local only. |
 | Application icon stays crimson | Brand mark, not UI chrome; unchanged. |
 | Log drawer is one text box with stream prefixes | Tabs deferred. |
