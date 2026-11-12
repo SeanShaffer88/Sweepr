@@ -3,7 +3,8 @@
 
 use super::actions::{filter_commands, Cmd, COMMANDS};
 use super::geometry::to_device;
-use super::theme::{colorref, palette};
+use super::theme::colorref;
+use super::window::{high_contrast, palette_for};
 use std::path::Path;
 use sweepr_core::settings::{Settings, Theme};
 use windows_sys::Win32::Foundation::*;
@@ -22,6 +23,7 @@ fn wide(s: &str) -> Vec<u16> {
 
 struct Dlg {
     dark: bool,
+    hc: bool,
     dpi: u32,
     brush: HBRUSH,
     done: bool,
@@ -31,6 +33,9 @@ struct Dlg {
     chk: [HWND; 3],
     timeout: HWND,
     theme: HWND,
+    sched: HWND,
+    time: HWND,
+    auto: HWND,
     // palette controls
     edit: HWND,
     list: HWND,
@@ -46,6 +51,7 @@ const ID_CANCEL: isize = 2;
 const ID_OPEN_DIR: isize = 210;
 const ID_EDIT: isize = 220;
 const ID_LIST: isize = 221;
+const ID_TEXT: isize = 222;
 const EN_CHANGE_CODE: u32 = 0x0300;
 const LBN_DBLCLK_CODE: u32 = 2;
 
@@ -77,7 +83,7 @@ unsafe fn child(
         std::ptr::null(),
     );
     SendMessageW(h, WM_SETFONT, d.font as WPARAM, 1);
-    if d.dark {
+    if d.dark && !d.hc {
         SetWindowTheme(h, wide("DarkMode_Explorer").as_ptr(), std::ptr::null());
     }
     h
@@ -163,7 +169,7 @@ unsafe extern "system" fn dlg_proc(
         }
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN
         | WM_CTLCOLORDLG => {
-            let p = palette(d.dark);
+            let p = palette_for(d.dark, d.hc);
             SetTextColor(wparam as HDC, colorref(p.fg));
             SetBkColor(wparam as HDC, colorref(p.background));
             d.brush as LRESULT
@@ -260,14 +266,18 @@ fn new_dlg(dark: bool, dpi: u32, data_dir: &Path) -> Box<Dlg> {
     unsafe {
         Box::new(Dlg {
             dark,
+            hc: high_contrast(),
             dpi,
-            brush: CreateSolidBrush(colorref(palette(dark).background)),
+            brush: CreateSolidBrush(colorref(palette_for(dark, high_contrast()).background)),
             done: false,
             ok: false,
             font: make_font(dpi),
             chk: [std::ptr::null_mut(); 3],
             timeout: std::ptr::null_mut(),
             theme: std::ptr::null_mut(),
+            sched: std::ptr::null_mut(),
+            time: std::ptr::null_mut(),
+            auto: std::ptr::null_mut(),
             edit: std::ptr::null_mut(),
             list: std::ptr::null_mut(),
             choice: None,
@@ -304,7 +314,7 @@ pub fn settings_dialog(
     unsafe {
         register("SweeprSettings", Some(dlg_proc));
         let mut d = new_dlg(dark, dpi, data_dir);
-        let (w, h) = (to_device(460, dpi), to_device(340, dpi));
+        let (w, h) = (to_device(480, dpi), to_device(470, dpi));
         let (x, y) = center(parent, w, h);
         let hwnd = CreateWindowExW(
             WS_EX_DLGMODALFRAME,
@@ -386,14 +396,53 @@ pub fn settings_dialog(
             Theme::Light => 2,
         };
         SendMessageW(d.theme, CB_SETCURSEL, sel, 0);
+        let flag = |on: bool| if on { BST_CHECKED } else { BST_UNCHECKED } as WPARAM;
+        d.sched = child(
+            hwnd,
+            "BUTTON",
+            "Check daily in the background (Task Scheduler; checks only, never installs)",
+            (BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+            (16, 214, 440, 32),
+            303,
+            &d,
+        );
+        SendMessageW(d.sched, BM_SETCHECK, flag(s.scheduled_check), 0);
+        child(
+            hwnd,
+            "STATIC",
+            "Daily check time (HH:MM, 24 h):",
+            0,
+            (36, 254, 230, 20),
+            0,
+            &d,
+        );
+        d.time = child(
+            hwnd,
+            "EDIT",
+            &s.schedule_time,
+            WS_BORDER | WS_TABSTOP,
+            (270, 248, 80, 32),
+            304,
+            &d,
+        );
+        d.auto = child(
+            hwnd,
+            "BUTTON",
+            "Look for new Sweepr versions on GitHub and ask before installing",
+            (BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+            (16, 290, 440, 32),
+            305,
+            &d,
+        );
+        SendMessageW(d.auto, BM_SETCHECK, flag(s.auto_update), 0);
         let loc = format!("Data folder: {}", data_dir.display());
-        child(hwnd, "STATIC", &loc, 0, (16, 218, 420, 20), 0, &d);
+        child(hwnd, "STATIC", &loc, 0, (16, 336, 440, 20), 0, &d);
         child(
             hwnd,
             "BUTTON",
             "Open data folder",
             WS_TABSTOP,
-            (16, 244, 140, 40),
+            (16, 372, 140, 40),
             ID_OPEN_DIR,
             &d,
         );
@@ -402,7 +451,7 @@ pub fn settings_dialog(
             "BUTTON",
             "OK",
             (BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-            (264, 244, 80, 40),
+            (284, 372, 80, 40),
             ID_OK,
             &d,
         );
@@ -411,7 +460,7 @@ pub fn settings_dialog(
             "BUTTON",
             "Cancel",
             WS_TABSTOP,
-            (352, 244, 80, 40),
+            (372, 372, 80, 40),
             ID_CANCEL,
             &d,
         );
@@ -427,6 +476,15 @@ pub fn settings_dialog(
             let len = GetWindowTextW(d.timeout, buf.as_mut_ptr(), 16) as usize;
             if let Ok(v) = String::from_utf16_lossy(&buf[..len]).trim().parse::<u64>() {
                 n.timeout_secs = v.clamp(5, 3600);
+            }
+            let checked = |h: HWND| SendMessageW(h, BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
+            n.scheduled_check = checked(d.sched);
+            n.auto_update = checked(d.auto);
+            let mut tb = [0u16; 16];
+            let tl = GetWindowTextW(d.time, tb.as_mut_ptr(), 16) as usize;
+            let t = String::from_utf16_lossy(&tb[..tl]).trim().to_string();
+            if sweepr_core::schedule::valid_time(&t) {
+                n.schedule_time = t;
             }
             n.theme = match SendMessageW(d.theme, CB_GETCURSEL, 0, 0) {
                 1 => Theme::Dark,
@@ -503,5 +561,58 @@ pub fn palette_dialog(
         DestroyWindow(hwnd);
         free_dlg(&d);
         out
+    }
+}
+
+/// Read-only text window (history, help). Close with Esc, Enter or the button.
+pub fn text_dialog(parent: HWND, dpi: u32, dark: bool, title: &str, text: &str) {
+    unsafe {
+        register("SweeprText", Some(dlg_proc));
+        let mut d = new_dlg(dark, dpi, Path::new(""));
+        let (w, h) = (to_device(720, dpi), to_device(480, dpi));
+        let (x, y) = center(parent, w, h);
+        let hwnd = CreateWindowExW(
+            WS_EX_DLGMODALFRAME,
+            wide("SweeprText").as_ptr(),
+            wide(title).as_ptr(),
+            WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+            x,
+            y,
+            w,
+            h,
+            parent,
+            std::ptr::null_mut(),
+            GetModuleHandleW(std::ptr::null()),
+            &mut *d as *mut Dlg as *const _,
+        );
+        let dp = &mut *d as *mut Dlg;
+        let ed = child(
+            hwnd,
+            "EDIT",
+            "",
+            (ES_MULTILINE as u32)
+                | (ES_READONLY as u32)
+                | (ES_AUTOVSCROLL as u32)
+                | WS_VSCROLL
+                | WS_BORDER
+                | WS_TABSTOP,
+            (8, 8, 686, 360),
+            ID_TEXT,
+            &d,
+        );
+        SetWindowTextW(ed, wide(&text.replace('\n', "\r\n")).as_ptr());
+        child(
+            hwnd,
+            "BUTTON",
+            "Close",
+            (BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
+            (606, 378, 88, 40),
+            ID_OK,
+            &d,
+        );
+        SetFocus(ed);
+        run_modal(parent, hwnd, dp, false);
+        DestroyWindow(hwnd);
+        free_dlg(&d);
     }
 }

@@ -68,6 +68,8 @@ pub enum Cmd {
     SelectNone,
     FocusFilter,
     SaveLog,
+    History,
+    CheckUpdate,
     ShowHelp,
     ResetLayout,
     NextRegion,
@@ -126,6 +128,18 @@ pub const COMMANDS: &[(Cmd, &str, &str, &str)] = &[
         "drawer output",
     ),
     (Cmd::SaveLog, "Save log to file", "Ctrl+S", "export"),
+    (
+        Cmd::History,
+        "Show update history",
+        "Ctrl+H",
+        "past updates undo log",
+    ),
+    (
+        Cmd::CheckUpdate,
+        "Check for Sweepr updates",
+        "",
+        "new version upgrade sweepr release",
+    ),
     (
         Cmd::Settings,
         "Open settings",
@@ -229,6 +243,17 @@ pub fn empty_state(
     ))
 }
 
+/// The one button shown on an empty list, matched to the title `empty_state` gave.
+pub fn empty_action(title: &str) -> (&'static str, Cmd) {
+    if title.starts_with("No package manager") {
+        ("Open settings", Cmd::Settings)
+    } else if title.starts_with("Sweepr could not read") {
+        ("Show the log", Cmd::ToggleLog)
+    } else {
+        ("Check again", Cmd::Check)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +341,36 @@ mod tests {
     }
 
     #[test]
+    fn every_listed_command_is_in_the_palette() {
+        use Cmd::*;
+        // ToggleRow and Palette are intentionally not palette entries.
+        for c in [
+            Check,
+            UpdateSelected,
+            UpdateAll,
+            ToggleLog,
+            ToggleDetails,
+            Settings,
+            ShowIgnored,
+            SelectAll,
+            SelectNone,
+            FocusFilter,
+            SaveLog,
+            History,
+            CheckUpdate,
+            ShowHelp,
+            ResetLayout,
+            NextRegion,
+            Cancel,
+        ] {
+            assert!(
+                COMMANDS.iter().any(|(cc, _, _, _)| *cc == c),
+                "{c:?} missing"
+            );
+        }
+    }
+
+    #[test]
     fn every_command_has_a_unique_label_and_shortcut() {
         let mut labels = std::collections::HashSet::new();
         let mut keys = std::collections::HashSet::new();
@@ -358,6 +413,19 @@ mod tests {
         let r = redact(log, "C:\\Users\\Sean");
         assert!(!r.to_lowercase().contains("sean"), "{r}");
         assert!(r.contains("%USERPROFILE%\\scoop\\apps\\fd"));
+    }
+
+    #[test]
+    fn empty_state_actions_match_the_situation() {
+        assert_eq!(empty_action("No package manager found").1, Cmd::Settings);
+        assert_eq!(
+            empty_action("Sweepr could not read some package managers").1,
+            Cmd::ToggleLog
+        );
+        assert_eq!(
+            empty_action("Everything is up to date"),
+            ("Check again", Cmd::Check)
+        );
     }
 
     #[test]

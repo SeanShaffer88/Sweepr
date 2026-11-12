@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added (next slice)
+- Update history: each update is recorded locally (`history.jsonl`, capped), shown with Ctrl+H or `--history [--json]`, with copy-and-run undo hints per manager. Hints are text only.
+- Optional daily check through Task Scheduler (`--scheduled-check`): checks only, remembers the result, and asks before opening the window when the outdated set is new or changed.
+- Sweepr self-update (on by default, switch off in Settings): WinHTTP check of this repository's latest release at most daily, SHA-256 verification against `SHA256SUMS.txt`, install only after you say yes. Manual command: Check for Sweepr updates. First network code in Sweepr itself; no new dependencies.
+- Clickable action on the empty list (Check again, Open settings or Show the log).
+- Localized WinGet parsing: header found by position, columns from the table layout, localized "nothing to upgrade" messages read as empty.
+
+### Changed
+- Settings and Commands dialogs now follow Windows high contrast.
+- Settings dialog is larger (schedule and update options).
+- Filter box text and placeholder are centered vertically (fix for the clipped placeholder; Unverified on screen).
+
 ### Changed (TesselGUI revision 2 conformance)
 - Palette is now the TesselGUI GitHub preset (the r2 default); crimson is no longer used in the UI. Light and dark variants; Windows high contrast falls back to system colors.
 - Layout follows Compact density: 32 px controls, 8 px gaps, 28 px rows and panel headers, 12 px dense / 13 px label type, a 2 px active-region rule, 40 px controls in dialogs.

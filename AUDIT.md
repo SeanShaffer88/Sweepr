@@ -7,13 +7,16 @@ Development ran in a Linux sandbox. Windows code was cross-checked (`cargo check
 | Area | Label | Notes |
 |---|---|---|
 | Model, error codes, id validator, rules, settings, job validation | **Verified** (Linux unit tests, 87 tests) | |
-| Parsers | **Partially verified** | WinGet: real capture (v1.30.140-preview, Win 10.0.26300, en-US, 3 rows incl. `< ` version) parses correctly, and a live run of v0.1.0 on the owner's machine (2026-11-08) listed the same 3 outdated packages. Choco 2.7.5: real capture and live run both cover the empty case only; non-empty real output Unverified. Scoop: not installed on the test machine, so real output Unverified (the live run correctly reported "not installed"). Non-English WinGet Unverified. WinGet hides unknown-version packages unless `--include-unknown`; Sweepr does not pass it. |
+| Parsers | **Partially verified** | WinGet: real capture (v1.30.140-preview, Win 10.0.26300, en-US, 3 rows incl. `< ` version) parses correctly, and a live run of v0.1.0 on the owner's machine (2026-11-08) listed the same 3 outdated packages. Choco 2.7.5: real capture and live run both cover the empty case only; non-empty real output Unverified. Scoop: not installed on the test machine, so real output Unverified (the live run correctly reported "not installed"). Localized WinGet: parser reads the table layout; German, Chinese and French-style synthetic fixtures pass, real non-English captures Unverified. WinGet hides unknown-version packages unless `--include-unknown`; Sweepr does not pass it. |
 | List model, sort, filter, status text, command palette filter | **Verified** (unit tests) | |
 | Theme contrast | **Verified** (computed in tests) | GitHub-preset tokens; ratios mirror TesselGUI's measured contract. |
 | Process execution, timeouts, tree kill | **Partially verified** | Unix path tested; Job Object path compiled only. |
 | Elevation, named pipe, SDDL, journal | **Unverified** | Wire format and job validation tested; Windows pipe and UAC never run. |
 | Win32 GUI (layout, DPI, tooltips, owner-draw, accelerators, dark mode) | **Partially verified** | v0.1.0 portable launched on the owner's real Windows machine (2026-11-08): main window and Settings dialog render correctly in the dark theme, discovery results and status bar are correct, and the portable data folder is honored. Still Unverified: DPI changes, updates run from the window, keyboard-only walkthrough. Known cosmetic note from that capture: the filter box placeholder text is clipped. The TesselGUI r2 rewrite (panels, own-drawn list, hint bar, details panel) has not been run on Windows at all: **Unverified**. |
 | Keyboard-only walkthrough | **Unverified** | |
+| Update history, undo hints | **Verified** (Linux unit tests); viewer **Unverified** | `history.rs` tests, CLI test; the Ctrl+H dialog was never run. |
+| Daily check (schtasks), `--scheduled-check` | **Partially verified** | Argument vector, time validation, change detection and the check itself tested on Linux with a fake manager. Task creation, the Yes/No prompt and relaunch **Unverified**. |
+| Self-update | **Partially verified** | SHA-256 (FIPS vectors), release parsing, version compare, URL allowlist and checksum matching are unit-tested. WinHTTP transfer, Setup.exe silent install, portable unpack-and-swap and restart **Unverified**; no releases signed. |
 | CLI | **Partially verified** | Host tests with fake adapters; real managers not run. |
 | CI build on windows-latest (fmt, clippy, tests, release build, portable zip, SHA256SUMS) | **Verified** (PR #1 run) | Build and tests only; the app was not launched. |
 | Packaging (Setup.exe + Portable.zip + SHA256SUMS.txt) | **Unverified** | Inno Setup script and naming reworked in the release-readiness slice; the installer has never been run. No MSI is produced. |
@@ -33,7 +36,7 @@ Source: TesselGUI v1.2.0 (`tokens.json`, `materials.md`). Sweepr implements the 
 | Panels with headers, 2 px active-region rule | Conforms | `paint`; Unverified on screen |
 | List: edge gridlines, 3 px selection bar, fixed header | Conforms | `draw_row`; Unverified on screen |
 | Details panel, remembered open state | Conforms | `present.rs` tests, settings test for old files |
-| Empty states on 24 px grid with shortcuts | Partial | Text and shortcut only; no clickable primary button |
+| Empty states on 24 px grid with a primary action | Conforms | `empty_action` tests; drawing Unverified |
 | Severity = icon + word + color; error anatomy what/why/fix, code last | Conforms | `present.rs` tests |
 | Ten-segment progress with units | Conforms | `segments` tests |
 | Hint bar, at most six clickable hints | Conforms | `hints` tests; click handling Unverified |
@@ -43,7 +46,7 @@ Source: TesselGUI v1.2.0 (`tokens.json`, `materials.md`). Sweepr implements the 
 | Tooltips after 500 ms | Conforms | `TTM_SETDELAYTIME`; Unverified |
 | Reset layout | Conforms | Command; Unverified |
 | No ambient motion | Conforms | None used |
-| High contrast | Partial | Main window uses system colors; dialogs do not |
+| High contrast | Conforms | Main window and dialogs use `palette_for`; Unverified on screen |
 | Other presets (Crimson etc.) | Not implemented | Deferred by decision |
 
 ## Risks
@@ -51,7 +54,8 @@ Source: TesselGUI v1.2.0 (`tokens.json`, `materials.md`). Sweepr implements the 
 1. Parser drift: manager output changes break lists. Mitigation: parse-failed error SWP-103 shows the raw output in the log.
 2. Elevation path untested on Windows. Mitigation: validate on a VM before any release.
 3. WinGet scope Unknown may fail without elevation.
-4. Telemetry: none by design; no network code in Sweepr itself.
+4. Telemetry: none. Sweepr itself now has one network use, the optional release check (GitHub over HTTPS); it sends the standard HTTP request and a `Sweepr/<version>` user agent, nothing else.
+5. Self-update trust: checksum and download come from the same release and nothing is code-signed; a compromised release would pass the check. Mitigation: it asks before installing, and the switch in Settings turns it off.
 
 ## Gate before release
 

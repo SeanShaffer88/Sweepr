@@ -23,6 +23,8 @@ pub struct Cli {
     pub version: bool,
     pub clean: bool,
     pub uninstall: bool,
+    pub history: bool,
+    pub scheduled_check: bool,
     pub elevated_run: Option<PathBuf>,
     pub pipe: Option<String>,
 }
@@ -38,6 +40,9 @@ USAGE: sweepr [OPTIONS]        (no options starts the window)
                       system-scope packages share one UAC prompt on Windows
   --silent            no text list on stdout
   --verbose, --debug, --trace   more detail on stderr
+  --scheduled-check   check once, remember the result, and ask before opening the window if
+                      something new is outdated; never installs (used by the daily task)
+  --history           print past updates (newest first) with undo hints; --json for JSON
   --clean             delete Sweepr's stored data (settings, logs, jobs); the program stays
   --uninstall         delete all of Sweepr's stored data and its data folder;
                       remove the program itself from Settings > Apps (installed)
@@ -65,6 +70,8 @@ pub fn parse_args(args: &[String]) -> Result<Cli, String> {
             "--version" => c.version = true,
             "--clean" => c.clean = true,
             "--uninstall" => c.uninstall = true,
+            "--history" => c.history = true,
+            "--scheduled-check" => c.scheduled_check = true,
             "--elevated-run" => {
                 let v = it.next().ok_or("--elevated-run needs a job path")?;
                 c.elevated_run = Some(PathBuf::from(v));
@@ -103,6 +110,28 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Option<
             .unwrap_or_default();
         return Some(clean(&data_dir(&exe_dir), c.uninstall, c.silent, out, err));
     }
+    if c.history {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        return Some(history(&data_dir(&exe_dir), c.json, out));
+    }
+    if c.scheduled_check {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        let dir = data_dir(&exe_dir);
+        let settings = Settings::load(&dir).settings;
+        return Some(scheduled_check(
+            &|| all_adapters(),
+            &settings,
+            &dir,
+            &|n| notify_updates(n),
+            err,
+        ));
+    }
     if let Some(job) = &c.elevated_run {
         let Some(pipe) = &c.pipe else {
             let _ = writeln!(err, "sweepr: --elevated-run needs --pipe");
@@ -130,6 +159,138 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Option<
         return Some(run_headless_with(&c, &|| all_adapters(), &settings, out));
     }
     None
+}
+
+/// `--scheduled-check`: one discovery run, remembered in `last_check.json`. `notify` gets the
+/// number of outdated packages when the backlog is new or changed and returns whether the
+/// user wants the window opened; this function then starts it.
+pub fn scheduled_check(
+    factory: &dyn Fn() -> Vec<Box<dyn PackageManager>>,
+    settings: &Settings,
+    dir: &std::path::Path,
+    notify: &dyn Fn(usize) -> bool,
+    err: &mut dyn Write,
+) -> i32 {
+    use sweepr_core::schedule::{load_last, save_last, should_notify, LastCheck};
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = discover(factory(), settings, CancelToken::new(), tx);
+    let mut pkgs: Vec<UpdatePackage> = Vec::new();
+    let mut failed = false;
+    for ev in rx {
+        match ev {
+            Event::Found(_, p) => pkgs.extend(p),
+            Event::ManagerStatus(m, Status::Failed(e)) => {
+                if !matches!(e, SwpError::ManagerMissing(_)) {
+                    let _ = writeln!(err, "sweepr: {}: {e}", m.as_str());
+                    failed = true;
+                }
+            }
+            Event::Done => break,
+            _ => {}
+        }
+    }
+    let _ = handle.join();
+    pkgs.retain(|p| !p.ignored);
+    if failed {
+        // A partial result could hide or invent changes; keep the previous record.
+        return 1;
+    }
+    let mut keys: Vec<String> = pkgs
+        .iter()
+        .map(|p| format!("{}:{}@{}", p.manager.as_str(), p.id, p.available_version))
+        .collect();
+    keys.sort();
+    let now = LastCheck {
+        ts: sweepr_core::history::now(),
+        count: keys.len(),
+        keys,
+    };
+    let prev = load_last(dir);
+    let ask = should_notify(prev.as_ref(), &now);
+    let _ = save_last(dir, &now);
+    if ask && notify(now.count) {
+        open_window();
+    }
+    0
+}
+
+#[cfg(windows)]
+fn notify_updates(n: usize) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_ICONINFORMATION, MB_YESNO,
+    };
+    let w = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+    let text = w(&format!(
+        "{n} package update{} available. Open Sweepr now?",
+        if n == 1 { "" } else { "s" }
+    ));
+    let title = w("Sweepr");
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_YESNO | MB_ICONINFORMATION,
+        ) == IDYES
+    }
+}
+
+#[cfg(not(windows))]
+fn notify_updates(_n: usize) -> bool {
+    false
+}
+
+fn open_window() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe).spawn();
+    }
+}
+
+/// `--history`: past updates, newest first (at most 50 as text, all as JSON).
+pub fn history(dir: &std::path::Path, json: bool, out: &mut dyn Write) -> i32 {
+    use sweepr_core::history::{line, load, undo_hint};
+    let all = load(dir);
+    if json {
+        let _ = serde_json::to_writer_pretty(&mut *out, &all);
+        let _ = writeln!(out);
+        return 0;
+    }
+    if all.is_empty() {
+        let _ = writeln!(out, "no updates recorded yet");
+    }
+    for e in all.iter().take(50) {
+        let _ = writeln!(out, "{}", line(e));
+        if let Some(h) = undo_hint(e) {
+            let _ = writeln!(
+                out,
+                "    undo (text only, may not work for every package): {h}"
+            );
+        }
+    }
+    0
+}
+
+/// Records each result of a batch. `pkgs` supplies the versions; history problems never fail an update.
+pub fn record_history(dir: &std::path::Path, pkgs: &[UpdatePackage], results: &[UpdateResult]) {
+    let now = sweepr_core::history::now();
+    let entries: Vec<sweepr_core::history::Entry> = results
+        .iter()
+        .filter_map(|r| {
+            let p = pkgs
+                .iter()
+                .find(|p| p.manager == r.manager && p.id == r.id)?;
+            Some(sweepr_core::history::Entry {
+                ts: now,
+                manager: r.manager,
+                id: r.id.clone(),
+                from: p.current_version.clone(),
+                to: p.available_version.clone(),
+                ok: r.ok,
+                code: r.code,
+            })
+        })
+        .collect();
+    let _ = sweepr_core::history::append(dir, &entries);
 }
 
 /// `--clean` / `--uninstall`: delete what Sweepr stored in its data dir.
@@ -368,6 +529,7 @@ pub fn update_all(
     if results.iter().any(|r| !r.ok) {
         failed = true;
     }
+    record_history(dir, &pkgs, &results);
 
     if c.json {
         let _ = serde_json::to_writer_pretty(&mut *out, &results);
@@ -508,6 +670,108 @@ mod tests {
         assert!(String::from_utf8(e).unwrap().contains("--bogus"));
     }
 
+    #[cfg(unix)]
+    struct OneFake;
+    #[cfg(unix)]
+    impl PackageManager for OneFake {
+        fn manager(&self) -> Manager {
+            Manager::Winget
+        }
+        fn detect(&self) -> Option<PathBuf> {
+            Some(PathBuf::from("/bin/sh"))
+        }
+        fn discovery_args(&self) -> Vec<String> {
+            args(&["-c", "printf 'x\\n'"])
+        }
+        fn parse(&self, _: &str) -> Result<Vec<UpdatePackage>, SwpError> {
+            Ok(vec![UpdatePackage {
+                id: "Fake.One".into(),
+                name: "One".into(),
+                current_version: "1".into(),
+                available_version: "2".into(),
+                manager: Manager::Winget,
+                scope: sweepr_core::model::Scope::User,
+                elevation_required: false,
+                pinned_by_manager: false,
+                ignored: false,
+                user_pin: None,
+            }])
+        }
+        fn upgrade_args(&self, _: &UpdatePackage) -> Result<Vec<String>, SwpError> {
+            Ok(vec![])
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scheduled_check_notifies_once_per_changed_backlog() {
+        use std::cell::Cell;
+        let d = std::env::temp_dir().join(format!("sweepr-cli-sched-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let calls = Cell::new(0usize);
+        let seen = Cell::new(0usize);
+        let notify = |n: usize| {
+            calls.set(calls.get() + 1);
+            seen.set(n);
+            false
+        };
+        let mut e = Vec::new();
+        let f = || vec![Box::new(OneFake) as Box<dyn PackageManager>];
+        assert_eq!(
+            scheduled_check(&f, &Settings::default(), &d, &notify, &mut e),
+            0
+        );
+        assert_eq!((calls.get(), seen.get()), (1, 1));
+        // same backlog again: no second prompt
+        assert_eq!(
+            scheduled_check(&f, &Settings::default(), &d, &notify, &mut e),
+            0
+        );
+        assert_eq!(calls.get(), 1);
+        let l = sweepr_core::schedule::load_last(&d).unwrap();
+        assert_eq!(l.count, 1);
+        assert_eq!(l.keys, vec!["winget:Fake.One@2".to_string()]);
+    }
+
+    #[test]
+    fn scheduled_check_flag_parses() {
+        assert!(
+            parse_args(&args(&["--scheduled-check"]))
+                .unwrap()
+                .scheduled_check
+        );
+    }
+
+    #[test]
+    fn history_flag_parses_and_prints() {
+        assert!(parse_args(&args(&["--history"])).unwrap().history);
+        let d = std::env::temp_dir().join(format!("sweepr-cli-hist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mut out = Vec::new();
+        assert_eq!(history(&d, false, &mut out), 0);
+        assert!(String::from_utf8(out).unwrap().contains("no updates"));
+        sweepr_core::history::append(
+            &d,
+            &[sweepr_core::history::Entry {
+                ts: 0,
+                manager: sweepr_core::model::Manager::Winget,
+                id: "A.B".into(),
+                from: "1".into(),
+                to: "2".into(),
+                ok: true,
+                code: None,
+            }],
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        history(&d, false, &mut out);
+        let t = String::from_utf8(out).unwrap();
+        assert!(t.contains("A.B") && t.contains("winget install --id A.B --version 1"));
+        let mut out = Vec::new();
+        history(&d, true, &mut out);
+        assert!(String::from_utf8(out).unwrap().contains("\"id\": \"A.B\""));
+    }
+
     #[test]
     fn clean_and_uninstall_flags_parse() {
         let c = parse_args(&args(&["--clean"])).unwrap();
@@ -640,6 +904,9 @@ mod tests {
         assert!(std::path::Path::new("/tmp/sweepr-update-all-marker").exists());
         let s = String::from_utf8(o).unwrap();
         assert!(s.contains("fd") && s.contains("updated"), "{s}");
+        let h = sweepr_core::history::load(&d);
+        assert_eq!(h.len(), 1, "history should record the update");
+        assert!(h[0].ok);
     }
 
     #[cfg(unix)]

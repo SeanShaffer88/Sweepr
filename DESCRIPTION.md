@@ -1,1 +1,1 @@
-Sweepr: a small native Windows app that lists outdated packages from WinGet, Chocolatey and Scoop in one window and updates the ones you pick, with at most one UAC prompt. Offline, no telemetry.
+Sweepr: a small native Windows app that lists outdated packages from WinGet, Chocolatey and Scoop in one window and updates the ones you pick, with at most one UAC prompt. No telemetry; its only network use is an optional, switch-off-able check for new Sweepr releases.

@@ -1,0 +1,5 @@
+Nom du paquet   Identifiant      Version actuelle   Version disponible   Source
+------------------------------------------------------------------------------
+Git             Git.Git          2.43.0             2.44.0               winget
+Curl            cURL.cURL        8.4.0              8.5.0                winget
+2 mises à niveau disponibles.
