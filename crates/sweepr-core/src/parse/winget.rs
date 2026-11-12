@@ -1,4 +1,4 @@
-use super::{cell_offset, clean_lines, is_rule, slice_cells};
+use super::{cell_width, clean_lines, is_rule, slice_cells};
 use crate::errors::SwpError;
 use crate::model::{Manager, Scope, UpdatePackage};
 
@@ -14,42 +14,99 @@ fn is_noise(l: &str) -> bool {
     t.contains('/') && (t.contains("KB") || t.contains("MB") || t.contains("GB"))
 }
 
-fn is_header(l: &str) -> bool {
-    let t = l.trim_start();
-    t.starts_with("Name") && t.contains("Id") && t.contains("Version") && t.contains("Available")
-}
-
 fn is_footer(l: &str) -> bool {
     let t = l.to_lowercase();
     t.contains("upgrade") && t.contains("available")
 }
 
-/// Parse `winget upgrade`. There is no JSON output, so columns are cut by the
-/// header's cell offsets (display width, so wide chars keep alignment).
+/// Cell offsets where each header token starts (tokens are separated by spaces).
+fn token_starts(h: &str) -> Vec<usize> {
+    let mut v = Vec::new();
+    let (mut cell, mut prev_space) = (0usize, true);
+    for c in h.chars() {
+        let sp = c.is_whitespace();
+        if !sp && prev_space {
+            v.push(cell);
+        }
+        prev_space = sp;
+        cell += cell_width(c);
+    }
+    v
+}
+
+fn char_at_cell(line: &str, at: usize) -> Option<char> {
+    let mut cell = 0;
+    for c in line.chars() {
+        if at < cell + cell_width(c).max(1) && at >= cell {
+            return Some(c);
+        }
+        cell += cell_width(c);
+    }
+    None
+}
+
+/// Column starts for a header followed by a rule line. WinGet localizes the header words
+/// but always emits Name, Id, Version, Available and optionally Source, in that order.
+/// A single-word-per-column header gives 4 or 5 tokens. A header with multi-word names is
+/// resolved from the data rows (a column starts where some row begins a cell); when
+/// that does not give exactly 4 or 5 columns the table is rejected (fail closed, SWP-103).
+fn column_starts(h: &str, rows: &[&String]) -> Option<Vec<usize>> {
+    let toks = token_starts(h);
+    if (4..=5).contains(&toks.len()) {
+        return Some(toks);
+    }
+    // A real column start is where some data row begins a cell: non-blank there, blank
+    // just before. Spaces inside a multi-word header name fail this.
+    let starts: Vec<usize> = toks
+        .into_iter()
+        .filter(|&c| {
+            rows.iter().any(|r| {
+                char_at_cell(r, c).is_some_and(|ch| !ch.is_whitespace())
+                    && (c == 0 || char_at_cell(r, c - 1).is_none_or(char::is_whitespace))
+            })
+        })
+        .collect();
+    (4..=5).contains(&starts.len()).then_some(starts)
+}
+
+/// A data row must be aligned to the header: a blank cell right before every column start
+/// after the first, and text reaching the Available column. Footers fail this.
+fn row_fits(l: &str, starts: &[usize]) -> bool {
+    let reach: usize = l.chars().map(cell_width).sum();
+    reach > starts[3]
+        && starts[1..4]
+            .iter()
+            .all(|c| char_at_cell(l, c - 1).is_none_or(char::is_whitespace))
+}
+
+/// Parse `winget upgrade`. There is no JSON output, so columns are cut by the header's cell
+/// offsets (display width, so wide chars keep alignment). The header may be localized.
 pub fn parse_winget(out: &str) -> Result<Vec<UpdatePackage>, SwpError> {
     let lines = clean_lines(out);
     let mut v = Vec::new();
     let mut tables = 0usize;
     let mut i = 0;
-    while i < lines.len() {
-        if !is_header(&lines[i]) {
+    while i + 1 < lines.len() {
+        // A header is the line right before a rule line.
+        if is_rule(&lines[i]) || lines[i].trim().is_empty() || !is_rule(&lines[i + 1]) {
             i += 1;
             continue;
         }
-        let h = &lines[i];
-        let at = |name: &str| h.find(name).map(|b| cell_offset(h, b));
-        let (Some(c_id), Some(c_ver), Some(c_avail)) = (at("Id"), at("Version"), at("Available"))
-        else {
-            break;
-        };
-        let c_src = at("Source");
-        i += 1;
-        if i < lines.len() && is_rule(&lines[i]) {
+        let h = lines[i].clone();
+        let body: Vec<&String> = lines[i + 2..]
+            .iter()
+            .take_while(|l| !l.trim().is_empty())
+            .collect();
+        let Some(starts) = column_starts(&h, &body) else {
             i += 1;
-        }
+            continue;
+        };
+        let (c_id, c_ver, c_avail) = (starts[1], starts[2], starts[3]);
+        let c_src = starts.get(4).copied();
+        i += 2;
         while i < lines.len() {
             let l = &lines[i];
-            if l.trim().is_empty() || is_footer(l) {
+            if l.trim().is_empty() || is_footer(l) || !row_fits(l, &starts) {
                 break;
             }
             let name = slice_cells(l, 0, Some(c_id));
@@ -76,9 +133,11 @@ pub fn parse_winget(out: &str) -> Result<Vec<UpdatePackage>, SwpError> {
     }
     if tables == 0 {
         let real: Vec<&String> = lines.iter().filter(|l| !is_noise(l)).collect();
-        let nothing = real.iter().all(|l| {
-            l.contains("No installed package found") || l.contains("No applicable upgrade")
-        });
+        // Nothing to upgrade prints only short sentences, in the user's language. Anything
+        // that still looks like columns (a run of 2+ spaces between words) is a table we
+        // could not read, so fail closed.
+        let columnar = real.iter().any(|l| l.trim().contains("  "));
+        let nothing = real.len() <= 3 && !columnar;
         if !nothing {
             return Err(SwpError::ParseFailed {
                 manager: Manager::Winget,
@@ -144,6 +203,44 @@ mod tests {
         assert_eq!(v[1].available_version, "5.3.0");
         assert_eq!(v[2].id, "CodeSector.TeraCopy");
         assert_eq!(v[2].available_version, "4.0.5");
+    }
+
+    #[test]
+    fn winget_german_header_parses() {
+        let out = include_str!("../../../../tests/fixtures/winget_upgrade_de.synthetic.txt");
+        let v = parse_winget(out).unwrap();
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].id, "Mozilla.Firefox");
+        assert_eq!(v[1].id, "Notepad++.Notepad++");
+        assert_eq!(v[1].available_version, "8.6.1");
+    }
+
+    #[test]
+    fn winget_chinese_header_parses() {
+        let out = include_str!("../../../../tests/fixtures/winget_upgrade_zh.synthetic.txt");
+        let v = parse_winget(out).unwrap();
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].name, "微信 WeChat");
+        assert_eq!(v[0].id, "Tencent.WeChat");
+        assert_eq!(v[1].available_version, "24.07");
+    }
+
+    #[test]
+    fn winget_multiword_header_resolved_by_gutters() {
+        let out =
+            include_str!("../../../../tests/fixtures/winget_upgrade_fr_multiword.synthetic.txt");
+        let v = parse_winget(out).unwrap();
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].id, "Git.Git");
+        assert_eq!(v[0].current_version, "2.43.0");
+        assert_eq!(v[1].id, "cURL.cURL");
+        assert_eq!(v[1].available_version, "8.5.0");
+    }
+
+    #[test]
+    fn winget_localized_nothing_to_upgrade_is_empty() {
+        let out = include_str!("../../../../tests/fixtures/winget_uptodate_de.synthetic.txt");
+        assert_eq!(parse_winget(out), Ok(vec![]));
     }
 
     #[test]
