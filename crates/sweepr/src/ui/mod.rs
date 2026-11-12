@@ -3,6 +3,7 @@ pub mod actions;
 pub mod dialogs;
 pub mod geometry;
 pub mod model;
+pub mod present;
 pub mod theme;
 pub mod tips;
 #[cfg(windows)]

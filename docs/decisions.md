@@ -18,5 +18,7 @@
 | Inno Setup installer; no MSI | Release shape is Setup.exe + Portable.zip + SHA256SUMS.txt only. The earlier WiX MSI was removed. |
 | Settings key `schema_version` | Contract V4.0 §2.3 naming; the legacy `version` key still loads and migrates on save. |
 | Tier t1b | Stock Win32 GUI utility: no rich renderer, service, driver, shell extension or autostart. |
-| Neutral palette hex chosen by contrast tests | TesselGUI gives primary `#D02946` and accent `#76172A` only. |
+| TesselGUI r2 GitHub preset is the only palette | r2 (v1.2.0) made GitHub the default and demoted Crimson to an optional preset. Tokens are copied from TesselGUI `tokens.json` and the contrast contract is re-checked in `theme.rs` tests. Other presets are deferred. |
+| Owner-drawn list rows | The stock ListView cannot colour gridlines or draw a selection bar; `NM_CUSTOMDRAW` draws rows, edge-colour gridlines and the checkbox. |
+| Application icon stays crimson | Brand mark, not UI chrome; unchanged. |
 | Log drawer is one text box with stream prefixes | Tabs deferred. |

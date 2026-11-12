@@ -20,10 +20,11 @@ pub enum Ctl {
     Cancel,
     List,
     Palette,
+    DetailsToggle,
 }
 
 #[cfg(test)]
-pub const ALL_CTLS: [Ctl; 15] = [
+pub const ALL_CTLS: [Ctl; 16] = [
     Ctl::Check,
     Ctl::UpdateSelected,
     Ctl::UpdateAll,
@@ -39,6 +40,7 @@ pub const ALL_CTLS: [Ctl; 15] = [
     Ctl::Cancel,
     Ctl::List,
     Ctl::Palette,
+    Ctl::DetailsToggle,
 ];
 
 pub fn tooltip(c: Ctl) -> &'static str {
@@ -58,6 +60,7 @@ pub fn tooltip(c: Ctl) -> &'static str {
         Ctl::Cancel => "Cancel the running check or update (Esc). Running installers may finish their current package.",
         Ctl::List => "Outdated packages. Space toggles the check, click a header to sort, right-click for ignore, pin and copy.",
         Ctl::Palette => "Open the command palette (Ctrl+K) to run any command by name.",
+        Ctl::DetailsToggle => "Show or hide the details panel (Ctrl+D) for the selected package.",
     }
 }
 
@@ -85,7 +88,7 @@ mod tests {
             assert!(t.len() > 10, "{c:?} has no real tooltip");
             assert!(seen.insert(t), "duplicate tooltip text for {c:?}");
         }
-        assert_eq!(ALL_CTLS.len(), 15);
+        assert_eq!(ALL_CTLS.len(), 16);
     }
 
     #[test]

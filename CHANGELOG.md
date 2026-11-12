@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed (TesselGUI revision 2 conformance)
+- Palette is now the TesselGUI GitHub preset (the r2 default); crimson is no longer used in the UI. Light and dark variants; Windows high contrast falls back to system colors.
+- Layout follows Compact density: 32 px controls, 8 px gaps, 28 px rows and panel headers, 12 px dense / 13 px label type, a 2 px active-region rule, 40 px controls in dialogs.
+- List draws its own rows: edge-colour row and column gridlines (fixes light gridlines on dark), 3 px selection bar with `selected` fill, own checkbox. Header stays fixed.
+- The one primary action (Update selected) is the green `action` color with hover, pressed and focus states.
+- Status bar leads with an icon and a word (Info, Done, Warning, Error) as well as color; failures say what, why and what to do, with the code last.
+- Ten-segment determinate progress with "N of M" text for checks and updates.
+- Command palette: recent first, fuzzy match, 8 rows, shortcut shown, unavailable commands stay listed and say why.
+- Tooltips appear after 500 ms.
+
+### Added
+- Details panel (Ctrl+D) for the highlighted package; its open state is remembered.
+- Hint bar with up to six clickable hints for the focused region.
+- Shortcuts Ctrl+F (find), Ctrl+A (select all), Ctrl+S (save log), Ctrl+D (details), F1 (help), F6 (next region).
+- Reset layout command.
+- Empty states on a 24 px grid motif.
+- Minimum window width is now 1040 px (logical); first-run width 1120.
+
 ## [0.1.0] - 2026-11-08
 
 ### Added
