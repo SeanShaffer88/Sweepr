@@ -68,6 +68,15 @@ pub struct Settings {
     pub log_drawer_open: bool,
     /// Details panel visible. Added after 0.1.0; older files get the default (open).
     pub details_open: bool,
+    /// Daily check through Task Scheduler (check only, never installs). Off by default.
+    pub scheduled_check: bool,
+    /// `HH:MM` for the scheduled check.
+    pub schedule_time: String,
+    /// Look for new Sweepr releases on GitHub and offer to install them. On by default;
+    /// the only network use in Sweepr itself.
+    pub auto_update: bool,
+    /// Unix seconds of the last release check.
+    pub last_update_check: u64,
     /// Set when the file came from a newer Sweepr; `save` then does nothing.
     #[serde(skip)]
     pub read_only: bool,
@@ -85,6 +94,10 @@ impl Default for Settings {
             window: None,
             log_drawer_open: false,
             details_open: true,
+            scheduled_check: false,
+            schedule_time: "09:00".into(),
+            auto_update: true,
+            last_update_check: 0,
             read_only: false,
         }
     }
