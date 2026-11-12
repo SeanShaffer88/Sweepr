@@ -10,4 +10,5 @@ pub mod parse;
 pub mod rules;
 pub mod schedule;
 pub mod settings;
+pub mod update;
 pub mod validate;

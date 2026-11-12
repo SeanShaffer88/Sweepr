@@ -16,6 +16,7 @@ use super::theme::{
     PANEL_HEADER_PX, ROW_HEIGHT_PX, SELECT_BAR_PX,
 };
 use super::tips::{column_tooltip, tooltip, Ctl};
+use super::updater::{self, Ready};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -108,6 +109,10 @@ enum UiMsg {
     Wire(Wire),
     Note(String),
     UpdatesDone,
+    SelfUpdate {
+        manual: bool,
+        result: Result<Option<Ready>, String>,
+    },
 }
 
 type Queue = Arc<Mutex<VecDeque<UiMsg>>>;
@@ -156,6 +161,8 @@ struct App {
     prog_total: usize,
     details_shown: String,
     batch: Vec<UpdatePackage>,
+    pending_update: Option<Ready>,
+    checking_self: bool,
     cancel: CancelToken,
     update_cancel: CancelToken,
     checking: bool,
@@ -415,6 +422,8 @@ pub fn run_gui(settings: Settings, notice: Option<SwpError>, data_dir: PathBuf) 
             prog_total: 0,
             details_shown: String::new(),
             batch: Vec::new(),
+            pending_update: None,
+            checking_self: false,
             cancel: CancelToken::new(),
             update_cancel: CancelToken::new(),
             checking: false,
@@ -1277,6 +1286,24 @@ unsafe fn drain_events(app: &mut App) {
                 }
             },
             UiMsg::Note(s) => append_log(app, s),
+            UiMsg::SelfUpdate { manual, result } => {
+                app.checking_self = false;
+                match result {
+                    Ok(None) => {
+                        if manual {
+                            append_log(app, "[sweepr] Sweepr is up to date".into());
+                            info_box(app, "Sweepr is up to date.");
+                        }
+                    }
+                    Ok(Some(r)) => offer_install(app, r),
+                    Err(e) => {
+                        append_log(app, format!("[sweepr] update check failed: {e}"));
+                        if manual {
+                            info_box(app, &format!("Could not check for updates: {e}"));
+                        }
+                    }
+                }
+            }
             UiMsg::UpdatesDone => {
                 app.updating = false;
                 app.running.clear();
@@ -1328,6 +1355,84 @@ unsafe fn show_history(app: &App) {
         }
     }
     text_dialog(app.hwnd, app.dpi, app.dark, "Update history", &t);
+}
+
+fn exe_path() -> PathBuf {
+    std::env::current_exe().unwrap_or_default()
+}
+
+fn is_portable() -> bool {
+    exe_path()
+        .parent()
+        .is_some_and(|d| d.join("portable.flag").exists())
+}
+
+unsafe fn info_box(app: &App, text: &str) {
+    MessageBoxW(
+        app.hwnd,
+        wide(text).as_ptr(),
+        wide("Sweepr").as_ptr(),
+        MB_OK | MB_ICONINFORMATION,
+    );
+}
+
+/// Checks GitHub for a newer Sweepr on a worker thread. Only network use in Sweepr itself.
+unsafe fn start_self_update_check(app: &mut App, manual: bool) {
+    if let Some(r) = app.pending_update.clone() {
+        offer_install(app, r);
+        return;
+    }
+    if app.checking_self {
+        return;
+    }
+    app.checking_self = true;
+    app.settings.last_update_check = sweepr_core::history::now();
+    save_settings(app);
+    let (queue, hwnd, dir, portable) = (
+        app.queue.clone(),
+        app.hwnd as usize,
+        app.data_dir.clone(),
+        is_portable(),
+    );
+    std::thread::spawn(move || {
+        let result = updater::check_and_fetch(&dir, portable);
+        post(&queue, hwnd, UiMsg::SelfUpdate { manual, result });
+    });
+}
+
+/// A verified download is ready: ask, then install and close, or keep it for later.
+unsafe fn offer_install(app: &mut App, r: Ready) {
+    let text = format!(
+        "Sweepr {} is ready (checksum verified).\n\nInstall now? Sweepr will close and restart.",
+        r.version
+    );
+    let ans = MessageBoxW(
+        app.hwnd,
+        wide(&text).as_ptr(),
+        wide("Sweepr update").as_ptr(),
+        MB_YESNO | MB_ICONQUESTION,
+    );
+    if ans != IDYES {
+        append_log(
+            app,
+            format!(
+                "[sweepr] version {} downloaded; use Check for Sweepr updates to install it",
+                r.version
+            ),
+        );
+        app.pending_update = Some(r);
+        return;
+    }
+    match updater::install(&r, &exe_path()) {
+        Ok(()) => {
+            app.pending_update = None;
+            SendMessageW(app.hwnd, WM_CLOSE, 0, 0);
+        }
+        Err(e) => {
+            append_log(app, format!("[sweepr] update failed: {e}"));
+            info_box(app, &format!("Update failed: {e}"));
+        }
+    }
 }
 
 unsafe fn toggle_row(app: &mut App, i: i32) {
@@ -1551,6 +1656,7 @@ unsafe fn run_cmd(app: &mut App, cmd: Cmd) {
         }
         Cmd::SaveLog => save_log(app),
         Cmd::History => show_history(app),
+        Cmd::CheckUpdate => start_self_update_check(app, true),
         Cmd::ShowHelp => show_help(app),
         Cmd::ResetLayout => reset_layout(app),
         Cmd::NextRegion => {
@@ -1576,6 +1682,39 @@ unsafe fn run_cmd(app: &mut App, cmd: Cmd) {
     }
 }
 
+/// Creates or removes the Task Scheduler entry when the setting changed.
+unsafe fn apply_schedule(app: &mut App, n: &mut Settings) {
+    use sweepr_core::schedule::{create_args, delete_args, run_schtasks};
+    let (old_on, old_time) = (
+        app.settings.scheduled_check,
+        app.settings.schedule_time.clone(),
+    );
+    if n.scheduled_check == old_on && n.schedule_time == old_time {
+        return;
+    }
+    let r = if n.scheduled_check {
+        create_args(&exe_path().display().to_string(), &n.schedule_time)
+            .and_then(|a| run_schtasks(&a))
+    } else {
+        run_schtasks(&delete_args())
+    };
+    match r {
+        Ok(()) => append_log(
+            app,
+            if n.scheduled_check {
+                format!("[sweepr] daily check scheduled at {}", n.schedule_time)
+            } else {
+                "[sweepr] daily check removed".into()
+            },
+        ),
+        Err(e) => {
+            append_log(app, format!("[sweepr] scheduled check not changed: {e}"));
+            n.scheduled_check = old_on;
+            n.schedule_time = old_time;
+        }
+    }
+}
+
 unsafe fn open_settings(app: &mut App) {
     if let Some(n) = settings_dialog(app.hwnd, &app.settings, app.dpi, app.dark, &app.data_dir) {
         let theme_changed = n.theme != app.settings.theme;
@@ -1583,6 +1722,8 @@ unsafe fn open_settings(app: &mut App) {
         n.window = app.settings.window;
         n.log_drawer_open = app.settings.log_drawer_open;
         n.details_open = app.settings.details_open;
+        n.last_update_check = app.settings.last_update_check;
+        apply_schedule(app, &mut n);
         app.settings = n;
         let on = [
             app.settings.sources.winget,
@@ -2139,6 +2280,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             app.hc = high_contrast();
             if app.settings.log_drawer_open {
                 set_log_open(app, true);
+            }
+            if let Some(l) = sweepr_core::schedule::load_last(&app.data_dir) {
+                append_log(
+                    app,
+                    format!(
+                        "[sweepr] last scheduled check: {} update(s) at {} UTC",
+                        l.count,
+                        sweepr_core::history::utc(l.ts)
+                    ),
+                );
+            }
+            updater::cleanup(&app.data_dir, &exe_path());
+            let due = sweepr_core::history::now().saturating_sub(app.settings.last_update_check)
+                > 24 * 3600;
+            if app.settings.auto_update && due {
+                start_self_update_check(app, false);
             }
             start_discovery(app);
             0

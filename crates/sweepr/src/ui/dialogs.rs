@@ -33,6 +33,9 @@ struct Dlg {
     chk: [HWND; 3],
     timeout: HWND,
     theme: HWND,
+    sched: HWND,
+    time: HWND,
+    auto: HWND,
     // palette controls
     edit: HWND,
     list: HWND,
@@ -272,6 +275,9 @@ fn new_dlg(dark: bool, dpi: u32, data_dir: &Path) -> Box<Dlg> {
             chk: [std::ptr::null_mut(); 3],
             timeout: std::ptr::null_mut(),
             theme: std::ptr::null_mut(),
+            sched: std::ptr::null_mut(),
+            time: std::ptr::null_mut(),
+            auto: std::ptr::null_mut(),
             edit: std::ptr::null_mut(),
             list: std::ptr::null_mut(),
             choice: None,
@@ -308,7 +314,7 @@ pub fn settings_dialog(
     unsafe {
         register("SweeprSettings", Some(dlg_proc));
         let mut d = new_dlg(dark, dpi, data_dir);
-        let (w, h) = (to_device(460, dpi), to_device(340, dpi));
+        let (w, h) = (to_device(480, dpi), to_device(470, dpi));
         let (x, y) = center(parent, w, h);
         let hwnd = CreateWindowExW(
             WS_EX_DLGMODALFRAME,
@@ -390,14 +396,53 @@ pub fn settings_dialog(
             Theme::Light => 2,
         };
         SendMessageW(d.theme, CB_SETCURSEL, sel, 0);
+        let flag = |on: bool| if on { BST_CHECKED } else { BST_UNCHECKED } as WPARAM;
+        d.sched = child(
+            hwnd,
+            "BUTTON",
+            "Check daily in the background (Task Scheduler; checks only, never installs)",
+            (BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+            (16, 214, 440, 32),
+            303,
+            &d,
+        );
+        SendMessageW(d.sched, BM_SETCHECK, flag(s.scheduled_check), 0);
+        child(
+            hwnd,
+            "STATIC",
+            "Daily check time (HH:MM, 24 h):",
+            0,
+            (36, 254, 230, 20),
+            0,
+            &d,
+        );
+        d.time = child(
+            hwnd,
+            "EDIT",
+            &s.schedule_time,
+            WS_BORDER | WS_TABSTOP,
+            (270, 248, 80, 32),
+            304,
+            &d,
+        );
+        d.auto = child(
+            hwnd,
+            "BUTTON",
+            "Look for new Sweepr versions on GitHub and ask before installing",
+            (BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+            (16, 290, 440, 32),
+            305,
+            &d,
+        );
+        SendMessageW(d.auto, BM_SETCHECK, flag(s.auto_update), 0);
         let loc = format!("Data folder: {}", data_dir.display());
-        child(hwnd, "STATIC", &loc, 0, (16, 218, 420, 20), 0, &d);
+        child(hwnd, "STATIC", &loc, 0, (16, 336, 440, 20), 0, &d);
         child(
             hwnd,
             "BUTTON",
             "Open data folder",
             WS_TABSTOP,
-            (16, 244, 140, 40),
+            (16, 372, 140, 40),
             ID_OPEN_DIR,
             &d,
         );
@@ -406,7 +451,7 @@ pub fn settings_dialog(
             "BUTTON",
             "OK",
             (BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-            (264, 244, 80, 40),
+            (284, 372, 80, 40),
             ID_OK,
             &d,
         );
@@ -415,7 +460,7 @@ pub fn settings_dialog(
             "BUTTON",
             "Cancel",
             WS_TABSTOP,
-            (352, 244, 80, 40),
+            (372, 372, 80, 40),
             ID_CANCEL,
             &d,
         );
@@ -431,6 +476,15 @@ pub fn settings_dialog(
             let len = GetWindowTextW(d.timeout, buf.as_mut_ptr(), 16) as usize;
             if let Ok(v) = String::from_utf16_lossy(&buf[..len]).trim().parse::<u64>() {
                 n.timeout_secs = v.clamp(5, 3600);
+            }
+            let checked = |h: HWND| SendMessageW(h, BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
+            n.scheduled_check = checked(d.sched);
+            n.auto_update = checked(d.auto);
+            let mut tb = [0u16; 16];
+            let tl = GetWindowTextW(d.time, tb.as_mut_ptr(), 16) as usize;
+            let t = String::from_utf16_lossy(&tb[..tl]).trim().to_string();
+            if sweepr_core::schedule::valid_time(&t) {
+                n.schedule_time = t;
             }
             n.theme = match SendMessageW(d.theme, CB_GETCURSEL, 0, 0) {
                 1 => Theme::Dark,

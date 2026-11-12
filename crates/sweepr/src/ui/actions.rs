@@ -69,6 +69,7 @@ pub enum Cmd {
     FocusFilter,
     SaveLog,
     History,
+    CheckUpdate,
     ShowHelp,
     ResetLayout,
     NextRegion,
@@ -127,6 +128,18 @@ pub const COMMANDS: &[(Cmd, &str, &str, &str)] = &[
         "drawer output",
     ),
     (Cmd::SaveLog, "Save log to file", "Ctrl+S", "export"),
+    (
+        Cmd::History,
+        "Show update history",
+        "Ctrl+H",
+        "past updates undo log",
+    ),
+    (
+        Cmd::CheckUpdate,
+        "Check for Sweepr updates",
+        "",
+        "new version upgrade sweepr release",
+    ),
     (
         Cmd::Settings,
         "Open settings",
@@ -314,6 +327,36 @@ mod tests {
         assert_eq!(&all[..2], &[Cmd::SaveLog, Cmd::Settings]);
         let q = filter_commands("log", &[Cmd::SaveLog]);
         assert_eq!(q[0], Cmd::SaveLog, "recent beats a better match");
+    }
+
+    #[test]
+    fn every_listed_command_is_in_the_palette() {
+        use Cmd::*;
+        // ToggleRow and Palette are intentionally not palette entries.
+        for c in [
+            Check,
+            UpdateSelected,
+            UpdateAll,
+            ToggleLog,
+            ToggleDetails,
+            Settings,
+            ShowIgnored,
+            SelectAll,
+            SelectNone,
+            FocusFilter,
+            SaveLog,
+            History,
+            CheckUpdate,
+            ShowHelp,
+            ResetLayout,
+            NextRegion,
+            Cancel,
+        ] {
+            assert!(
+                COMMANDS.iter().any(|(cc, _, _, _)| *cc == c),
+                "{c:?} missing"
+            );
+        }
     }
 
     #[test]
