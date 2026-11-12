@@ -156,6 +156,7 @@ struct App {
     rc_det_hdr: RECT,
     rc_log_hdr: RECT,
     rc_hint: RECT,
+    rc_filter: RECT,
     rc_prog: RECT,
     recent: Vec<Cmd>,
     sev: Severity,
@@ -419,6 +420,7 @@ pub fn run_gui(settings: Settings, notice: Option<SwpError>, data_dir: PathBuf) 
             rc_det_hdr: ZERO_RECT,
             rc_log_hdr: ZERO_RECT,
             rc_hint: ZERO_RECT,
+            rc_filter: ZERO_RECT,
             rc_prog: ZERO_RECT,
             recent: Vec::new(),
             sev: Severity::Info,
@@ -666,7 +668,7 @@ unsafe fn create_controls(app: &mut App) {
         app,
         "EDIT",
         "",
-        ES_AUTOHSCROLL as u32 | WS_BORDER | WS_TABSTOP,
+        ES_AUTOHSCROLL as u32 | WS_TABSTOP,
         0,
         ID_FILTER,
     );
@@ -886,17 +888,47 @@ unsafe fn layout(app: &mut App) {
         rx -= gap;
     }
     place(ID_FILTER, x, gap, (rx - x).max(d(80)));
-    // Center the text (and the placeholder) vertically in the 32 px box; the default formatting
-    // rectangle hugs the top and clipped the placeholder in the first field capture.
-    let mut fr: RECT = std::mem::zeroed();
-    GetClientRect(app.filter, &mut fr);
-    let line_h = d(DENSE_PX) * 4 / 3;
-    let inset = ((fr.bottom - fr.top - line_h) / 2).max(0);
-    fr.top += inset;
-    fr.bottom -= inset;
-    fr.left += d(6);
-    fr.right -= d(6);
-    SendMessageW(app.filter, EM_SETRECT, 0, &fr as *const _ as LPARAM);
+    // A single-line edit ignores EM_SETRECT and draws its text at the top of its client area
+    // (clipped placeholder in the v0.2.0 capture). So the frame is painted by `paint` and the
+    // edit is a line-high child centered inside it.
+    let mut fb: RECT = std::mem::zeroed();
+    GetWindowRect(app.filter, &mut fb);
+    let mut tl = POINT {
+        x: fb.left,
+        y: fb.top,
+    };
+    let mut br = POINT {
+        x: fb.right,
+        y: fb.bottom,
+    };
+    ScreenToClient(app.hwnd, &mut tl);
+    ScreenToClient(app.hwnd, &mut br);
+    app.rc_filter = RECT {
+        left: tl.x,
+        top: tl.y,
+        right: br.x,
+        bottom: br.y,
+    };
+    let line_h = d(DENSE_PX) + d(6);
+    let inset = ((app.rc_filter.bottom - app.rc_filter.top - line_h) / 2).max(0);
+    MoveWindow(
+        app.filter,
+        app.rc_filter.left + d(8),
+        app.rc_filter.top + inset,
+        (app.rc_filter.right - app.rc_filter.left - d(16)).max(d(40)),
+        line_h,
+        1,
+    );
+    InvalidateRect(app.hwnd, &app.rc_filter, 0);
+    // Multiline read-only panels honor EM_SETRECT: keep text off the panel edges.
+    for h in [app.details, app.log_edit] {
+        let mut cr: RECT = std::mem::zeroed();
+        GetClientRect(h, &mut cr);
+        cr.left += gap;
+        cr.right -= gap;
+        cr.top += d(6);
+        SendMessageW(h, EM_SETRECT, 0, &cr as *const _ as LPARAM);
+    }
 
     let toolbar_h = ch + 2 * gap;
     let (hint_h, status_h, ph) = (d(HINT_H), d(STATUS_H), d(PANEL_HEADER_PX));
@@ -1891,6 +1923,9 @@ unsafe fn on_notify(app: &mut App, lparam: LPARAM) -> LRESULT {
         }
         return 0;
     }
+    if hdr.hwndFrom == app.header && hdr.code == NM_CUSTOMDRAW {
+        return draw_header(app, &mut *(lparam as *mut NMCUSTOMDRAW));
+    }
     if hdr.hwndFrom != app.list {
         return 0;
     }
@@ -1978,6 +2013,56 @@ unsafe fn on_notify(app: &mut App, lparam: LPARAM) -> LRESULT {
             }
         }
         _ => 0,
+    }
+}
+
+/// Column header in palette colors (the system header stayed white in dark mode in the v0.2.0
+/// field capture). Own-drawn: `raised` fill, edge lines, label text with the sort arrow.
+unsafe fn draw_header(app: &App, cd: &mut NMCUSTOMDRAW) -> LRESULT {
+    if app.hc {
+        return CDRF_DODEFAULT as LRESULT;
+    }
+    let p = pal(app);
+    match cd.dwDrawStage {
+        CDDS_PREPAINT => {
+            let mut all: RECT = std::mem::zeroed();
+            GetClientRect(app.header, &mut all);
+            fill(cd.hdc, &all, p.raised);
+            line(
+                cd.hdc,
+                all.left,
+                all.bottom - 1,
+                all.right,
+                all.bottom,
+                p.edge,
+            );
+            CDRF_NOTIFYITEMDRAW as LRESULT
+        }
+        CDDS_ITEMPREPAINT => {
+            let r = cd.rc;
+            fill(cd.hdc, &r, p.raised);
+            line(cd.hdc, r.left, r.bottom - 1, r.right, r.bottom, p.edge);
+            line(cd.hdc, r.right - 1, r.top, r.right, r.bottom, p.edge);
+            let mut buf = [0u16; 64];
+            let mut item: HDITEMW = std::mem::zeroed();
+            item.mask = HDI_TEXT;
+            item.pszText = buf.as_mut_ptr();
+            item.cchTextMax = buf.len() as i32;
+            SendMessageW(
+                app.header,
+                HDM_GETITEMW,
+                cd.dwItemSpec,
+                &mut item as *mut _ as LPARAM,
+            );
+            let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            let text = String::from_utf16_lossy(&buf[..n]);
+            let mut t = r;
+            t.left += to_device(GAP_PX, app.dpi);
+            t.right -= to_device(4, app.dpi);
+            text_in(cd.hdc, app.font_label, p.fg, &t, &text, TXT);
+            CDRF_SKIPDEFAULT as LRESULT
+        }
+        _ => CDRF_DODEFAULT as LRESULT,
     }
 }
 
@@ -2142,6 +2227,17 @@ unsafe fn paint(app: &mut App, hdc: HDC) {
     if app.rc_det_hdr.right > app.rc_det_hdr.left {
         let x = app.rc_det_hdr.left;
         line(hdc, x, app.rc_det_hdr.top, x + 1, app.rc_hint.top, p.edge);
+    }
+    // Filter frame: surface fill with an edge border (selection color while focused).
+    if app.rc_filter.right > app.rc_filter.left {
+        let f = app.rc_filter;
+        let focused = GetFocus() == app.filter;
+        let bc = if focused { p.selection } else { p.edge };
+        fill(hdc, &f, p.surface);
+        line(hdc, f.left, f.top, f.right, f.top + 1, bc);
+        line(hdc, f.left, f.bottom - 1, f.right, f.bottom, bc);
+        line(hdc, f.left, f.top, f.left + 1, f.bottom, bc);
+        line(hdc, f.right - 1, f.top, f.right, f.bottom, bc);
     }
     // Hint bar: up to six clickable hints for the focused region.
     let hr = app.rc_hint;
@@ -2424,8 +2520,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_COMMAND => {
             let id = (wparam & 0xFFFF) as isize;
             let code = ((wparam >> 16) & 0xFFFF) as u32;
-            if code == EN_SETFOCUS {
+            if code == EN_SETFOCUS || code == EN_KILLFOCUS {
                 update_region(app);
+                InvalidateRect(app.hwnd, &app.rc_filter, 0);
             }
             match id {
                 ID_BTN_CHECK => run_cmd(app, Cmd::Check),
