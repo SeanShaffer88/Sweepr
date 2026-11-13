@@ -400,7 +400,7 @@ pub fn settings_dialog(
         d.sched = child(
             hwnd,
             "BUTTON",
-            "Check daily in the background (Task Scheduler; checks only, never installs)",
+            "Check daily in the background (checks only, never installs)",
             (BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
             (16, 214, 440, 32),
             303,

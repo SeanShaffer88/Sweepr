@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed (from the v0.2.0 field capture; Unverified until re-run on Windows)
+- Column header stayed white in dark mode: now drawn in palette colors.
+- Filter box text and placeholder hugged the top edge (a single-line edit ignores `EM_SETRECT`): frame is painted by Sweepr and the edit is centered inside it.
+- Details and Log text touched the panel edge: now inset.
+- Settings: schedule checkbox label no longer cut off.
+
 ## [0.2.0] - 2026-11-11
 
 ### Added (next slice)
