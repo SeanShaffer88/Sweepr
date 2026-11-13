@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-13
+
 ### Fixed (from the v0.2.0 field capture; Unverified until re-run on Windows)
 - Column header stayed white in dark mode: now drawn in palette colors.
 - Filter box text and placeholder hugged the top edge (a single-line edit ignores `EM_SETRECT`): frame is painted by Sweepr and the edit is centered inside it.
