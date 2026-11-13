@@ -1,9 +1,9 @@
 ; Sweepr installer (Inno Setup 6). Per-user install: no admin rights needed
 ; to install the app itself; Sweepr asks for elevation only when a batch of
 ; system-scope packages is updated.
-; Build via packaging\package.ps1, or: ISCC.exe /DVersion=0.2.0 /DExe=<path to sweepr.exe> Sweepr.iss
+; Build via packaging\package.ps1, or: ISCC.exe /DVersion=0.2.1 /DExe=<path to sweepr.exe> Sweepr.iss
 #ifndef Version
-  #define Version "0.2.0"
+  #define Version "0.2.1"
 #endif
 #ifndef Exe
   #define Exe "..\target\release\sweepr.exe"
